@@ -56,12 +56,102 @@ function pingServer(port, cb) {
   });
 }
 
+function postEvent(port, name, body, cb) {
+  const payload = body ? JSON.stringify(body) : "";
+  const req = http.request(
+    {
+      host: "127.0.0.1",
+      port,
+      method: "POST",
+      path: "/event/" + name,
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+    },
+    (res) => {
+      res.resume();
+      res.on("end", () => cb && cb(true));
+    }
+  );
+  req.on("error", () => cb && cb(false));
+  req.end(payload);
+}
+
+// Drive the server through a realistic agent lifecycle so you can watch the
+// game react — no Claude Code hooks or real session required.
+function runWalkthrough(port, { loop }) {
+  const timeline = [
+    { delay: 0, event: "working", log: "working   prompt sent — play!" },
+    { delay: 1500, event: "tool", log: "tool ×1   streak climbing" },
+    { delay: 1500, event: "tool", log: "tool ×2" },
+    { delay: 1500, event: "tool", log: "tool ×3" },
+    {
+      delay: 2000,
+      event: "waiting",
+      body: { message: "Approve edit to lib/server.js?" },
+      log: 'waiting   🔔 "Approve edit to lib/server.js?"',
+    },
+    { delay: 4000, event: "working", log: "working   resumed — tools reset" },
+    { delay: 1500, event: "tool", log: "tool ×1" },
+    { delay: 1500, event: "tool", log: "tool ×2" },
+    { delay: 2000, event: "done", log: "done      ✓ turn complete" },
+    { delay: 3500, event: "idle", log: "idle      back to waiting for a prompt" },
+  ];
+
+  let i = 0;
+  function next() {
+    if (i >= timeline.length) {
+      if (loop) return setTimeout(() => ((i = 0), next()), 1500);
+      console.log("\n· Walkthrough done. Server still up — Ctrl-C to stop.");
+      return;
+    }
+    const step = timeline[i++];
+    setTimeout(() => {
+      postEvent(port, step.event, step.body, (ok) =>
+        console.log(`  ${ok ? "→" : "✗"} ${step.log}`)
+      );
+      next();
+    }, step.delay);
+  }
+  console.log("Driving an auto walkthrough" + (loop ? " (looping)" : "") + ":");
+  next();
+}
+
+// Manual control: press a key, fire an event.
+function runInteractive(port, server) {
+  const map = {
+    w: ["working", null, "working"],
+    t: ["tool", null, "tool +1"],
+    n: ["waiting", { message: "Agent needs your input" }, "waiting 🔔"],
+    s: ["done", null, "done ✓"],
+    i: ["idle", null, "idle"],
+  };
+  console.log(
+    "\nInteractive — drive the agent yourself:\n" +
+      "  [w]orking  [t]ool  [n]eeds-you  [s]top/done  [i]dle  [q]uit\n"
+  );
+  const stdin = process.stdin;
+  if (stdin.isTTY) stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding("utf8");
+  function quit() {
+    if (stdin.isTTY) stdin.setRawMode(false);
+    stdin.pause();
+    server.close(() => process.exit(0));
+  }
+  stdin.on("data", (key) => {
+    if (key === "q" || key === "") return quit(); // q or Ctrl-C
+    const m = map[key];
+    if (!m) return;
+    postEvent(port, m[0], m[1], (ok) => console.log(`  ${ok ? "→" : "✗"} ${m[2]}`));
+  });
+}
+
 function help() {
   console.log(`
 agent-arcade — play a game while your Claude Code agent works.
 
 Usage:
   npx agent-arcade [start]        Start the server + open the game
+  npx agent-arcade simulate       Start + drive a fake agent session (try it, no hooks)
   npx agent-arcade install        Add the hooks to Claude Code settings
   npx agent-arcade verify         Check hooks are installed, valid, and live
   npx agent-arcade uninstall      Remove only the hooks we added
@@ -69,6 +159,8 @@ Usage:
 
 Flags:
   --port <n>     Port (default 4317). Used by server AND installed hooks.
+  --interactive  (simulate) Drive events by key: w/t/n/s/i — instead of auto.
+  --loop         (simulate) Repeat the auto walkthrough until Ctrl-C.
   --precise      Narrow Notification to permission_prompt + idle_prompt
                  (less noise; needs a Claude Code version that validates them).
                  Default is the safe, always-valid empty matcher.
@@ -162,6 +254,23 @@ if (cmd === "install") {
     console.log(`\nFinal check — inside Claude Code run  /hooks  and confirm`);
     console.log(`UserPromptSubmit · PreToolUse · Notification · Stop are listed.`);
     console.log(`(If they're missing, Claude Code rejected the settings — fix JSON, reinstall.)`);
+  });
+} else if (cmd === "simulate" || cmd === "sim") {
+  const server = createServer();
+  server.listen(PORT, "127.0.0.1", () => {
+    const url = `http://localhost:${PORT}`;
+    const interactive = flag("interactive");
+    console.log(`Agent Arcade → ${url}  (Ctrl-C to stop)`);
+    console.log(`Simulating events — no Claude Code hooks needed.\n`);
+    if (!flag("no-open")) openBrowser(url);
+    if (interactive) runInteractive(PORT, server);
+    else runWalkthrough(PORT, { loop: flag("loop") });
+  });
+  server.on("error", (e) => {
+    if (e.code === "EADDRINUSE")
+      console.error(`✗ Port ${PORT} is in use. Try --port <n>.`);
+    else console.error("✗ " + e.message);
+    process.exit(1);
   });
 } else if (cmd === "start") {
   const server = createServer();

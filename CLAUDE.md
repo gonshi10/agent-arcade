@@ -34,7 +34,12 @@ reads `../public/index.html`. Keep the `bin/lib/public` layout — `package.json
 ```bash
 npm start              # node bin/agent-arcade.js  (start server + open game)
 npm start -- --no-open # start without opening the browser
+npm run sim            # simulate a fake agent session — try the game with no hooks
 npm test               # node --test  (runs test/smoke.js)
+
+node bin/agent-arcade.js simulate               # auto walkthrough (working→waiting→done→idle)
+node bin/agent-arcade.js simulate --loop        # repeat the walkthrough
+node bin/agent-arcade.js simulate --interactive # drive events by key: w/t/n/s/i
 
 node bin/agent-arcade.js install    # merge hooks into Claude Code settings
 node bin/agent-arcade.js verify     # confirm hooks present, JSON valid, server live

@@ -30,6 +30,7 @@ npx github:gonshi10/agent-arcade install
 | command | what it does |
 |---|---|
 | `npx agent-arcade [start]` | start the server + open the game |
+| `npx agent-arcade simulate` | start + drive a fake agent session — try the game with no hooks installed |
 | `npx agent-arcade install` | merge the hooks into Claude Code settings |
 | `npx agent-arcade verify` | check hooks are present, JSON is valid, server is up |
 | `npx agent-arcade uninstall` | remove **only** the hooks we added |
@@ -44,7 +45,9 @@ npx github:gonshi10/agent-arcade install
 | `--global` | write to `~/.claude/settings.json` (all projects) |
 | `--shared` | write to `./.claude/settings.json` (committed to the repo) |
 | *(default)* | `./.claude/settings.local.json` — personal, gitignored |
-| `--no-open` | don't auto-open the browser on `start` |
+| `--no-open` | don't auto-open the browser on `start` / `simulate` |
+| `--interactive` | (`simulate`) drive events by key — `w`/`t`/`n`/`s`/`i` — instead of the auto walkthrough |
+| `--loop` | (`simulate`) repeat the auto walkthrough until Ctrl-C |
 
 Default scope is the **personal, gitignored** settings file so installing doesn't
 push a game onto your teammates.

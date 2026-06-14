@@ -7,6 +7,7 @@
   },
   "scripts": {
     "start": "node bin/agent-arcade.js",
+    "sim": "node bin/agent-arcade.js simulate",
     "test": "node --test"
   },
   "files": [
