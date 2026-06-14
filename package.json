@@ -5,6 +5,10 @@
   "bin": {
     "agent-arcade": "bin/agent-arcade.js"
   },
+  "scripts": {
+    "start": "node bin/agent-arcade.js",
+    "test": "node --test"
+  },
   "files": [
     "bin",
     "lib",
