@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(npm start)",
+      "Bash(npm start:*)",
+      "Bash(npm test)",
+      "Bash(npm test:*)",
+      "Bash(node bin/agent-arcade.js:*)",
+      "Bash(node --test:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ]
+  }
+}

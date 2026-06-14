@@ -1,0 +1,37 @@
+{
+  "name": "agent-arcade",
+  "version": "0.1.0",
+  "description": "Play a game while your Claude Code agent works — that yanks you back the instant it needs you.",
+  "bin": {
+    "agent-arcade": "bin/agent-arcade.js"
+  },
+  "scripts": {
+    "start": "node bin/agent-arcade.js",
+    "sim": "node bin/agent-arcade.js simulate",
+    "test": "node --test"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "agent",
+    "hooks",
+    "game",
+    "cli",
+    "productivity"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gonshi10/agent-arcade.git"
+  },
+  "license": "MIT"
+}
