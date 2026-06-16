@@ -219,13 +219,15 @@ addEventListener("click",()=>{ if(!actx) beep(0,0.001); if(Notification?.permiss
 // ---------- loops ----------
 async function poll(){
   try{
-    const r=await fetch("/state",{cache:"no-store"});
+    const r=await fetch("/state?watch=1",{cache:"no-store"});
     applyState(await r.json());
   }catch(e){
     document.getElementById("status").textContent="server offline";
   }
 }
 setInterval(poll,200); poll();
+// Tell the server the moment this tab goes away, so the next prompt reopens the game.
+addEventListener("pagehide",()=>navigator.sendBeacon("/event/closed"));
 
 function loop(ts){
   requestAnimationFrame(loop);

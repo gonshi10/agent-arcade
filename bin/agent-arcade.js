@@ -81,8 +81,12 @@ function postEvent(port, name, body, cb) {
 // to answer, then post. Must stay fast and never throw — UserPromptSubmit blocks
 // the prompt until this returns.
 function runHook(port, event) {
-  pingServer(port, (alive) => {
-    if (alive) return postEvent(port, event, null, () => process.exit(0));
+  pingServer(port, (alive, state) => {
+    if (alive) {
+      // Server's up but no tab is watching (closed/never opened) — reopen the game.
+      if (state && !state.watched) openBrowser(`http://localhost:${port}`);
+      return postEvent(port, event, null, () => process.exit(0));
+    }
 
     // Cold start: detached server survives this short-lived process.
     try {

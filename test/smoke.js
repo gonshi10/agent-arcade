@@ -96,6 +96,21 @@ test("unknown event returns 404", withServer(async (port) => {
   assert.equal(status, 404);
 }));
 
+test("only ?watch=1 polls mark the game as watched", withServer(async (port) => {
+  // Plain /state (the CLI's liveness ping) must NOT count as a watcher.
+  const ping = await request(port, "GET", "/state");
+  assert.equal(ping.body.watched, false, "bare /state should not mark watched");
+
+  // A real browser poll carries ?watch=1.
+  const watch = await request(port, "GET", "/state?watch=1");
+  assert.equal(watch.body.watched, true, "?watch=1 should mark watched");
+
+  // The tab closing flips it back immediately.
+  await request(port, "POST", "/event/closed");
+  const after = await request(port, "GET", "/state");
+  assert.equal(after.body.watched, false, "/event/closed should clear watched");
+}));
+
 // --- 1b. buildHooks: auto-launch UserPromptSubmit ----------------------------
 
 test("UserPromptSubmit auto-launches by default (node hook working)", () => {
