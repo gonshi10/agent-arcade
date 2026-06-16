@@ -89,13 +89,13 @@
   </div>
 
   <div class="controls" id="controls">
-    <button id="btnResume" class="ctl" type="button">▶ Resume — keep game</button>
-    <button id="btnRestart" class="ctl" type="button">↻ Restart — start over</button>
+    <button id="btnResume" class="ctl" type="button">⏸ Pause</button>
+    <button id="btnRestart" class="ctl" type="button">↻ Restart</button>
   </div>
 
   <div class="foot">
-    <div><span class="dot working"></span>working — play. <span class="dot waiting"></span>waiting / done — get back to your agent, the game pauses.</div>
-    <div>Move: <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> or <kbd>WASD</kbd>. It auto-starts on launch; when the agent needs you or finishes it pauses — hit <b>Resume</b> to continue or <b>Restart</b> for a new round. Your streak grows while the agent works without needing you.</div>
+    <div><span class="dot working"></span>agent working · <span class="dot waiting"></span>agent needs you / finished — the game auto-pauses so you can jump back.</div>
+    <div>Move with <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> or <kbd>WASD</kbd>. The game auto-starts and plays while you wait on the agent; it pauses when the agent needs you or finishes. <b>Pause</b>/<b>Resume</b> anytime, or <b>Restart</b> for a fresh round. Your streak grows while the agent runs without needing you.</div>
   </div>
 
 <script>
@@ -181,7 +181,8 @@ addEventListener("keydown",e=>{
 let agent="idle", lastSeq=-1;
 // The game runs only while `running` (and the snake is alive). It starts true so the
 // game auto-plays the moment the window opens; agent waiting/done/idle auto-pause it,
-// and only the player's Resume/Restart click starts it again.
+// and the player toggles it with the Pause/Resume button (Restart starts a fresh round).
+// Always change it via setRunning() so the toggle button label stays in sync.
 let running=true;
 const overlay=document.getElementById("overlay");
 
@@ -207,20 +208,20 @@ function applyState(s){
   // attention. Only the player's Resume/Restart click sets `running` back to true.
   if(agent==="working"){
     st.textContent = running ? "working — play" : "working — paused";
-    if(!running) setOverlay("idle","⏸  Paused","Click Resume to keep playing, or Restart for a new game.","paused");
+    if(!running) showPaused();
     // if running, the loop keeps drawing and hides the overlay
   }else if(agent==="waiting"){
-    running=false;
+    setRunning(false);
     st.textContent="NEEDS YOU";
-    setOverlay("alert","⚠  Agent needs you",(s.reason||"Permission or input required.")+"  ·  Resume or Restart when you're ready.","get back");
+    setOverlay("alert","⚠  Agent needs you",(s.reason||"Permission or input required.")+"  ·  Resume or Restart when you're ready.","needs you");
     if(prev!=="waiting"){ alertChime(); flashTitle("🔔 AGENT NEEDS YOU"); }
   }else if(agent==="done"){
-    running=false;
+    setRunning(false);
     st.textContent="done";
-    setOverlay("done","✓  Agent finished","Turn complete. Streak: "+s.elapsed.toFixed(1)+"s · "+s.tools+" tools.  ·  Resume or Restart to keep playing.","review");
+    setOverlay("done","✓  Agent finished","Turn complete. Streak: "+s.elapsed.toFixed(1)+"s · "+s.tools+" tools.  ·  Resume or Restart to keep playing.","finished");
     if(prev!=="done"){ doneChime(); flashTitle("✓ AGENT DONE"); }
   }else{ // idle
-    running=false;
+    setRunning(false);
     st.textContent="idle";
     setOverlay("idle","Waiting for the agent","Send a prompt in Claude Code — or Resume / Restart to play now.","idle");
   }
@@ -242,15 +243,25 @@ function tryNotify(msg){
 addEventListener("focus",clearFlash);
 addEventListener("click",()=>{ if(!actx) beep(0,0.001); if(Notification?.permission==="default") Notification.requestPermission(); });
 
-// ---------- resume / restart controls ----------
+// ---------- pause / resume / restart controls ----------
 const btnResume=document.getElementById("btnResume"), btnRestart=document.getElementById("btnRestart");
+// Single source of truth for `running`: keeps the toggle button (Pause⇄Resume) in sync.
+function setRunning(v){
+  running=v;
+  btnResume.textContent = v ? "⏸ Pause" : "▶ Resume";
+  btnResume.classList.toggle("active", v); // accent while the game is live
+}
+function showPaused(){
+  setOverlay("idle","⏸  Paused","Game paused. Resume to keep playing, or Restart for a new round.","paused");
+}
+function pause(){ setRunning(false); showPaused(); }
 function play(restart){
   if(restart || !alive) reset(); // Restart, or reviving a crashed game → fresh round
-  running=true;
+  setRunning(true);
   hideOverlay();
   if(actx && actx.state==="suspended") actx.resume(); // a click is a user gesture
 }
-btnResume.addEventListener("click",()=>{ play(false); btnResume.blur(); });
+btnResume.addEventListener("click",()=>{ running ? pause() : play(false); btnResume.blur(); });
 btnRestart.addEventListener("click",()=>{ play(true); btnRestart.blur(); });
 
 // ---------- loops ----------
@@ -269,15 +280,16 @@ addEventListener("pagehide",()=>navigator.sendBeacon("/event/closed"));
 function loop(ts){
   requestAnimationFrame(loop);
   if(!running){ return; }                 // paused — overlay already shown by applyState
-  if(!alive){                             // you crashed — wait for Resume/Restart
-    setOverlay("alert","💥 Crashed","Click Resume or Restart to play again.","retry");
+  if(!alive){                             // you crashed — stop and wait for Resume/Restart
+    if(running) setRunning(false);
+    setOverlay("alert","💥 Crashed","Resume or Restart to play again.","crashed");
     return;
   }
   hideOverlay();
   if(ts-lastTick>=tickMs){ lastTick=ts; step(); }
   draw();
 }
-reset(); requestAnimationFrame(loop);
+reset(); setRunning(true); requestAnimationFrame(loop);
 </script>
 </body>
 </html>
