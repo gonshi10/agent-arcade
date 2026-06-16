@@ -48,12 +48,18 @@ node bin/agent-arcade.js uninstall  # remove only the hooks we added
 
 ## Hook → endpoint map
 
-| Claude Code hook | endpoint | effect |
+| Claude Code hook | command | effect |
 |---|---|---|
-| `UserPromptSubmit` | `POST /event/working` | start a round, reset tool count |
-| `PreToolUse` | `POST /event/tool` | +1 tool, stay live |
-| `Notification` | `POST /event/waiting` | yank back + show the message |
-| `Stop` | `POST /event/done` | freeze + chime |
+| `UserPromptSubmit` | `agent-arcade hook working` (default) → `POST /event/working` | **auto-launch**: ensure server up + open game once on cold start, then start a round, reset tool count. With `install --no-autostart` it's the old bare `curl /event/working`. |
+| `PreToolUse` | `curl POST /event/tool` | +1 tool, stay live |
+| `Notification` | `curl POST /event/waiting` | yank back + show the message |
+| `Stop` | `curl POST /event/done` | freeze + chime |
+
+`agent-arcade hook <event>` (in `bin/agent-arcade.js`, function `runHook`) is the
+self-bootstrapping entry the installed `UserPromptSubmit` hook calls: if the server is live it
+just posts; on a cold start it spawns a **detached** server, opens the browser once, waits for it,
+then posts `working`. Only `UserPromptSubmit` uses it — the other three stay fast curls because by
+the time they fire the server is already up.
 
 ## Conventions — keep these intact
 
