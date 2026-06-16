@@ -251,6 +251,7 @@ Flags:
                   Default is the safe, always-valid empty matcher.
   --no-autostart  (install) Don't auto-launch the game on prompt; assume you
                   started the server yourself. Default: auto-launch is on.
+  --no-gitignore  (install) Don't patch the repo .gitignore with local artifacts
   --global        Target ~/.claude/settings.json (all projects)
   --shared        Target ./.claude/settings.json (committed to the repo)
                   default: ./.claude/settings.local.json (personal, gitignored)
@@ -271,16 +272,24 @@ if (cmd === "help" || flag("help") || flag("h")) {
 if (cmd === "install") {
   try {
     const scope = scopeFromFlags();
-    const { file, backedUp, precise, autostart } = hooks.install({
+    const { file, backedUp, precise, autostart, gitignore: gitignoreResult } = hooks.install({
       port: PORT,
       scope,
       precise: flag("precise"),
       autostart: !flag("no-autostart"),
+      gitignore: !flag("no-gitignore"),
     });
     console.log(`✓ Installed agent-arcade hooks → ${scopeLabel(scope)}`);
     console.log(`  ${file}${backedUp ? "  (backup: .bak)" : ""}`);
     console.log(`  Port ${PORT}  ·  Notification matcher: ${precise ? "permission_prompt + idle_prompt" : "all (empty)"}`);
     console.log(`  Auto-launch on prompt: ${autostart ? "on (game opens itself)" : "off (start the server yourself)"}`);
+    if (gitignoreResult) {
+      if (gitignoreResult.added.length) {
+        console.log(`  Added to .gitignore: ${gitignoreResult.added.join(", ")}`);
+      } else {
+        console.log(`  · .gitignore already covers agent-arcade artifacts`);
+      }
+    }
     console.log(`\n→ Restart Claude Code, then ${autostart ? "just send a prompt — the game launches itself." : "run:  npx agent-arcade"}`);
     console.log(`  (Check anytime with:  npx agent-arcade verify)`);
   } catch (e) {

@@ -216,3 +216,91 @@ test("uninstall removes only ours and prunes empty events", () => {
 
   fs.rmSync(cwd, { recursive: true, force: true });
 });
+
+// --- 3. installer: gitignore handling ----------------------------------------
+
+function tmpGitRepo() {
+  const cwd = tmpCwd();
+  fs.mkdirSync(path.join(cwd, ".git"));
+  return cwd;
+}
+
+function readGitignore(cwd) {
+  const file = path.join(cwd, ".gitignore");
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+}
+
+test("local install adds settings.local.json and .bak to .gitignore", () => {
+  const cwd = tmpGitRepo();
+  hooks.install({ scope: "local", cwd });
+  const text = readGitignore(cwd);
+  assert.match(text, /\.claude\/settings\.local\.json/);
+  assert.match(text, /\.claude\/settings\.local\.json\.bak/);
+  assert.match(text, /# agent-arcade/);
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("local install is idempotent in .gitignore", () => {
+  const cwd = tmpGitRepo();
+  hooks.install({ scope: "local", cwd });
+  const first = readGitignore(cwd);
+  hooks.install({ scope: "local", cwd });
+  const second = readGitignore(cwd);
+  assert.equal(first, second, ".gitignore should not change on re-install");
+  assert.equal(
+    second.split(".claude/settings.local.json.bak").length - 1,
+    1,
+    ".bak pattern should appear exactly once"
+  );
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("local install respects pre-existing .gitignore patterns", () => {
+  const cwd = tmpGitRepo();
+  fs.writeFileSync(
+    path.join(cwd, ".gitignore"),
+    "# Claude Code local overrides\n.claude/settings.local.json\n"
+  );
+  hooks.install({ scope: "local", cwd });
+  const text = readGitignore(cwd);
+  assert.equal(
+    text.split(".claude/settings.local.json\n").length - 1,
+    1,
+    "settings.local.json should not be duplicated"
+  );
+  assert.match(text, /\.claude\/settings\.local\.json\.bak/);
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("shared install adds only settings.json.bak to .gitignore", () => {
+  const cwd = tmpGitRepo();
+  hooks.install({ scope: "shared", cwd });
+  const text = readGitignore(cwd);
+  assert.match(text, /\.claude\/settings\.json\.bak/);
+  assert.doesNotMatch(text, /^\.claude\/settings\.json$/m);
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("global install and non-git cwd skip .gitignore", () => {
+  const noGit = tmpCwd();
+  hooks.install({ scope: "local", cwd: noGit });
+  assert.ok(!fs.existsSync(path.join(noGit, ".gitignore")));
+  fs.rmSync(noGit, { recursive: true, force: true });
+
+  assert.deepEqual(hooks.gitignorePatternsForScope("global"), []);
+});
+
+test("global install does not patch repo .gitignore", () => {
+  const cwd = tmpGitRepo();
+  const home = tmpCwd();
+  const oldHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    hooks.install({ scope: "global", cwd });
+    assert.equal(readGitignore(cwd), "");
+  } finally {
+    process.env.HOME = oldHome;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

@@ -22,6 +22,7 @@ done     → freeze, soft chime, shows streak + tool count
 | `bin/agent-arcade.js` | CLI entry — arg/flag parsing, the `start`/`install`/`verify`/`uninstall`/`help` subcommands, browser open, server ping. |
 | `lib/server.js` | `createServer()` — the HTTP server + in-memory state machine. Serves `public/index.html`, `GET /state`, `POST /event/*`. |
 | `lib/hooks.js` | The load-bearing installer: deep-merges our hooks into Claude Code `settings.json` without clobbering existing ones. `install` / `uninstall` / `inspect` / `buildHooks`. |
+| `lib/gitignore.js` | Finds the git root and idempotently patches `.gitignore` on `install` (scope-dependent patterns). |
 | `public/index.html` | The game UI. Polls `/state` and reads only the `agent` field, so the game can be swapped freely. |
 | `test/smoke.js` | Zero-dep `node:test` smoke tests for the server + installer. |
 
@@ -75,6 +76,9 @@ the time they fire the server is already up.
   `verify` and the in-app `/hooks` check.
 - **Install scopes.** Default is the personal, gitignored `./.claude/settings.local.json`
   (`--global` → `~/.claude/settings.json`, `--shared` → committed `./.claude/settings.json`).
+  For `local`/`shared`, `install` also ensures the repo `.gitignore` covers the settings
+  file and `.bak` backup it writes (pass `--no-gitignore` to skip). `uninstall` does not
+  remove those ignore entries.
 
 ## Note on `.claude/settings.json`
 
