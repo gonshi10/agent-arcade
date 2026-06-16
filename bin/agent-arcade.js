@@ -137,7 +137,7 @@ function runHook(port, event) {
 
     // Cold start: detached server survives this short-lived process.
     try {
-      spawn(process.execPath, [__filename, "start", "--no-open", "--port", String(port)], {
+      spawn(process.execPath, [__filename, "start", "--no-open", "--port", String(port), "--state", event], {
         detached: true,
         stdio: "ignore",
       }).unref();
@@ -396,7 +396,10 @@ if (cmd === "install") {
     process.exit(1);
   });
 } else if (cmd === "start") {
-  const server = createServer();
+  // --state seeds the initial agent state. The cold-start server the prompt hook
+  // spawns boots straight into `working`, so the open tab shows the game even if
+  // the follow-up `working` POST is slow or dropped.
+  const server = createServer({ initialAgent: opt("state", null) });
   server.listen(PORT, "127.0.0.1", () => {
     const url = `http://localhost:${PORT}`;
     console.log(`Agent Arcade → ${url}  (Ctrl-C to stop)`);

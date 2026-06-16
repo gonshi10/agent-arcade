@@ -111,6 +111,21 @@ test("only ?watch=1 polls mark the game as watched", withServer(async (port) => 
   assert.equal(after.body.watched, false, "/event/closed should clear watched");
 }));
 
+test("createServer seeds the initial agent state (cold-start working)", async () => {
+  // The prompt hook cold-starts the server with --state working so the open tab
+  // shows the game even if the follow-up `working` POST never lands.
+  const server = createServer({ initialAgent: "working" });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  try {
+    const { body } = await request(port, "GET", "/state");
+    assert.equal(body.agent, "working", "seeded agent should be working");
+    assert.equal(body.tools, 0);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
 // --- 1b. buildHooks: auto-launch UserPromptSubmit ----------------------------
 
 test("UserPromptSubmit auto-launches by default (node hook working)", () => {
