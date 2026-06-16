@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 "use strict";
 const http = require("http");
+const https = require("https");
 const { exec, spawn } = require("child_process");
+const CURRENT = require("../package.json").version;
 const { createServer } = require("../lib/server");
 const hooks = require("../lib/hooks");
 
@@ -73,6 +75,51 @@ function postEvent(port, name, body, cb) {
   );
   req.on("error", () => cb && cb(false));
   req.end(payload);
+}
+
+// Fetch the latest published version from the npm registry. The /latest endpoint
+// returns a slim manifest; we only read `.version`. Never throws — any
+// network/parse/timeout error comes back through `cb(err)`.
+function fetchLatestVersion(cb) {
+  const req = https.get(
+    {
+      host: "registry.npmjs.org",
+      path: "/agent-arcade/latest",
+      timeout: 3000,
+      headers: { Accept: "application/json" },
+    },
+    (res) => {
+      let d = "";
+      res.on("data", (c) => (d += c));
+      res.on("end", () => {
+        try {
+          const v = JSON.parse(d).version;
+          if (!v) throw new Error("no version in registry response");
+          cb(null, v);
+        } catch (e) {
+          cb(e);
+        }
+      });
+    }
+  );
+  req.on("error", cb);
+  req.on("timeout", () => {
+    req.destroy();
+    cb(new Error("timed out"));
+  });
+}
+
+// True if version `a` is strictly greater than `b`. Zero-dep semver-lite: compares
+// the three numeric segments; any `-prerelease` suffix is dropped, so `1.2.0-rc.1`
+// is treated as `1.2.0` (fine for this CLI's needs).
+function semverGt(a, b) {
+  const parse = (v) =>
+    String(v).split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+  const [x, y] = [parse(a), parse(b)];
+  for (let i = 0; i < 3; i++) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  }
+  return false;
 }
 
 // Self-bootstrapping hook entry: ensure the server is up, then post `event`.
@@ -190,6 +237,7 @@ Usage:
   npx agent-arcade install        Add the hooks to Claude Code settings
   npx agent-arcade verify         Check hooks are installed, valid, and live
   npx agent-arcade uninstall      Remove only the hooks we added
+  npx agent-arcade update         Check npm and upgrade to the latest version
   npx agent-arcade help
 
   (npx agent-arcade hook <event>  internal — run by the installed prompt hook)
@@ -295,6 +343,36 @@ if (cmd === "install") {
     console.log(`\nFinal check — inside Claude Code run  /hooks  and confirm`);
     console.log(`UserPromptSubmit · PreToolUse · Notification · Stop are listed.`);
     console.log(`(If they're missing, Claude Code rejected the settings — fix JSON, reinstall.)`);
+  });
+} else if (cmd === "update") {
+  fetchLatestVersion((err, latest) => {
+    if (err) {
+      console.log(`·  Couldn't reach npm (${err.message}). You're on v${CURRENT}.`);
+      process.exit(0);
+    }
+    if (!semverGt(latest, CURRENT)) {
+      console.log(`✓ Already up to date (v${CURRENT}).`);
+      process.exit(0);
+    }
+    console.log(`Updating v${CURRENT} → v${latest} …\n`);
+    const npm = spawn("npm", ["install", "-g", "agent-arcade@" + latest], {
+      stdio: "inherit",
+    });
+    npm.on("error", (e) => {
+      console.error(`✗ Couldn't run npm: ${e.message}`);
+      process.exit(1);
+    });
+    npm.on("close", (code) => {
+      if (code === 0) {
+        console.log(`\n✓ Updated to v${latest}.`);
+        process.exit(0);
+      }
+      console.error(
+        `\n✗ npm exited with code ${code}. If it's a permissions error, ` +
+          `re-run with the rights to install globally.`
+      );
+      process.exit(1);
+    });
   });
 } else if (cmd === "hook") {
   // Internal: invoked by the installed UserPromptSubmit hook.
