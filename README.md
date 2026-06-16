@@ -14,10 +14,14 @@ Zero dependencies. Pure Node — which you already have, since Claude Code runs 
 
 ```bash
 npx agent-arcade install     # wire the hooks into Claude Code (no hand-editing JSON)
-# restart Claude Code so it reloads hooks, then:
-npx agent-arcade verify      # confirm hooks loaded + valid + server reachable
-npx agent-arcade             # run it (put the tab on a second monitor), then prompt away
+# restart Claude Code so it reloads hooks, then just send a prompt —
+# the game starts itself and opens in your browser. No separate `start` needed.
 ```
+
+Auto-launch is on by default: your first prompt boots the server and opens the game tab, then
+later prompts reuse it. To confirm the wiring (and see the live server), run
+`npx agent-arcade verify`. Prefer to start the server yourself? Install with `--no-autostart` and
+run `npx agent-arcade` before prompting.
 
 No npm publish yet? Run straight from the repo:
 
@@ -42,6 +46,7 @@ npx github:gonshi10/agent-arcade install
 |---|---|
 | `--port <n>` | port for server **and** installed hooks (default `4317`) |
 | `--precise` | narrow `Notification` to `permission_prompt` + `idle_prompt` (less noise) |
+| `--no-autostart` | (`install`) don't auto-launch the game on prompt; start the server yourself. Default: auto-launch on |
 | `--global` | write to `~/.claude/settings.json` (all projects) |
 | `--shared` | write to `./.claude/settings.json` (committed to the repo) |
 | *(default)* | `./.claude/settings.local.json` — personal, gitignored |

@@ -13,9 +13,12 @@ const http = require("http");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFile } = require("child_process");
 
 const { createServer } = require("../lib/server");
 const hooks = require("../lib/hooks");
+
+const BIN = path.join(__dirname, "..", "bin", "agent-arcade.js");
 
 // --- tiny HTTP helpers -------------------------------------------------------
 
@@ -91,6 +94,33 @@ test("done sets agent to done", withServer(async (port) => {
 test("unknown event returns 404", withServer(async (port) => {
   const { status } = await request(port, "POST", "/event/nope");
   assert.equal(status, 404);
+}));
+
+// --- 1b. buildHooks: auto-launch UserPromptSubmit ----------------------------
+
+test("UserPromptSubmit auto-launches by default (node hook working)", () => {
+  const cmd = hooks.buildHooks(4317).UserPromptSubmit[0].hooks[0].command;
+  assert.match(cmd, /hook working/, "should invoke the self-bootstrapping hook");
+  assert.match(cmd, /bin[/\\]agent-arcade\.js/, "should use an absolute bin path");
+  assert.match(cmd, /--port 4317/, "should pass the port through");
+  assert.ok(cmd.includes(hooks.MARKER), "must keep the ownership marker");
+});
+
+test("--no-autostart reverts UserPromptSubmit to the bare curl", () => {
+  const cmd = hooks.buildHooks(4317, { autostart: false }).UserPromptSubmit[0].hooks[0].command;
+  assert.match(cmd, /curl .*\/event\/working/, "should be the bare-curl form");
+  assert.doesNotMatch(cmd, /hook working/);
+  assert.ok(cmd.includes(hooks.MARKER), "must keep the ownership marker");
+});
+
+test("hook posts to an already-running server (no cold start)", withServer(async (port) => {
+  await new Promise((resolve, reject) =>
+    execFile(process.execPath, [BIN, "hook", "working", "--port", String(port)], (err) =>
+      err ? reject(err) : resolve()
+    )
+  );
+  const { body } = await request(port, "GET", "/state");
+  assert.equal(body.agent, "working");
 }));
 
 // --- 2. installer: idempotent, non-clobbering --------------------------------

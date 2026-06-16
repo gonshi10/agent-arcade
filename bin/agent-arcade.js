@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 const http = require("http");
-const { exec } = require("child_process");
+const { exec, spawn } = require("child_process");
 const { createServer } = require("../lib/server");
 const hooks = require("../lib/hooks");
 
@@ -73,6 +73,37 @@ function postEvent(port, name, body, cb) {
   );
   req.on("error", () => cb && cb(false));
   req.end(payload);
+}
+
+// Self-bootstrapping hook entry: ensure the server is up, then post `event`.
+// If the server is already live we just post (no new browser tab). On a cold
+// start we spawn a detached background server, open the game once, wait for it
+// to answer, then post. Must stay fast and never throw — UserPromptSubmit blocks
+// the prompt until this returns.
+function runHook(port, event) {
+  pingServer(port, (alive) => {
+    if (alive) return postEvent(port, event, null, () => process.exit(0));
+
+    // Cold start: detached server survives this short-lived process.
+    try {
+      spawn(process.execPath, [__filename, "start", "--no-open", "--port", String(port)], {
+        detached: true,
+        stdio: "ignore",
+      }).unref();
+    } catch {
+      return process.exit(0);
+    }
+    openBrowser(`http://localhost:${port}`);
+
+    let tries = 0;
+    (function waitUp() {
+      pingServer(port, (up) => {
+        if (up) return postEvent(port, event, null, () => process.exit(0));
+        if (++tries >= 10) return process.exit(0); // ~2s max, give up quietly
+        setTimeout(waitUp, 200);
+      });
+    })();
+  });
 }
 
 // Drive the server through a realistic agent lifecycle so you can watch the
@@ -157,23 +188,26 @@ Usage:
   npx agent-arcade uninstall      Remove only the hooks we added
   npx agent-arcade help
 
+  (npx agent-arcade hook <event>  internal — run by the installed prompt hook)
+
 Flags:
-  --port <n>     Port (default 4317). Used by server AND installed hooks.
-  --interactive  (simulate) Drive events by key: w/t/n/s/i — instead of auto.
-  --loop         (simulate) Repeat the auto walkthrough until Ctrl-C.
-  --precise      Narrow Notification to permission_prompt + idle_prompt
-                 (less noise; needs a Claude Code version that validates them).
-                 Default is the safe, always-valid empty matcher.
-  --global       Target ~/.claude/settings.json (all projects)
-  --shared       Target ./.claude/settings.json (committed to the repo)
-                 default: ./.claude/settings.local.json (personal, gitignored)
-  --no-open      Don't auto-open the browser on start
+  --port <n>      Port (default 4317). Used by server AND installed hooks.
+  --interactive   (simulate) Drive events by key: w/t/n/s/i — instead of auto.
+  --loop          (simulate) Repeat the auto walkthrough until Ctrl-C.
+  --precise       Narrow Notification to permission_prompt + idle_prompt
+                  (less noise; needs a Claude Code version that validates them).
+                  Default is the safe, always-valid empty matcher.
+  --no-autostart  (install) Don't auto-launch the game on prompt; assume you
+                  started the server yourself. Default: auto-launch is on.
+  --global        Target ~/.claude/settings.json (all projects)
+  --shared        Target ./.claude/settings.json (committed to the repo)
+                  default: ./.claude/settings.local.json (personal, gitignored)
+  --no-open       Don't auto-open the browser on start
 
 First run:
   npx agent-arcade install
-  # restart Claude Code, then:
-  npx agent-arcade verify
-  npx agent-arcade
+  # restart Claude Code, then just send a prompt — the game launches itself.
+  # (auto-launch is on by default; check anytime with: npx agent-arcade verify)
 `);
 }
 
@@ -185,15 +219,18 @@ if (cmd === "help" || flag("help") || flag("h")) {
 if (cmd === "install") {
   try {
     const scope = scopeFromFlags();
-    const { file, backedUp, precise } = hooks.install({
+    const { file, backedUp, precise, autostart } = hooks.install({
       port: PORT,
       scope,
       precise: flag("precise"),
+      autostart: !flag("no-autostart"),
     });
     console.log(`✓ Installed agent-arcade hooks → ${scopeLabel(scope)}`);
     console.log(`  ${file}${backedUp ? "  (backup: .bak)" : ""}`);
     console.log(`  Port ${PORT}  ·  Notification matcher: ${precise ? "permission_prompt + idle_prompt" : "all (empty)"}`);
-    console.log(`\n→ Restart Claude Code, then run:  npx agent-arcade verify`);
+    console.log(`  Auto-launch on prompt: ${autostart ? "on (game opens itself)" : "off (start the server yourself)"}`);
+    console.log(`\n→ Restart Claude Code, then ${autostart ? "just send a prompt — the game launches itself." : "run:  npx agent-arcade"}`);
+    console.log(`  (Check anytime with:  npx agent-arcade verify)`);
   } catch (e) {
     console.error("✗ " + e.message);
     process.exit(1);
@@ -255,6 +292,10 @@ if (cmd === "install") {
     console.log(`UserPromptSubmit · PreToolUse · Notification · Stop are listed.`);
     console.log(`(If they're missing, Claude Code rejected the settings — fix JSON, reinstall.)`);
   });
+} else if (cmd === "hook") {
+  // Internal: invoked by the installed UserPromptSubmit hook.
+  const event = argv.find((a) => !a.startsWith("-") && a !== "hook") || "working";
+  runHook(PORT, event);
 } else if (cmd === "simulate" || cmd === "sim") {
   const server = createServer();
   server.listen(PORT, "127.0.0.1", () => {
