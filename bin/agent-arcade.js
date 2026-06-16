@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 "use strict";
 const http = require("http");
+const https = require("https");
 const { exec, spawn } = require("child_process");
-const { createServer } = require("../lib/server");
+const CURRENT = require("../package.json").version;
+const { createServer, BUILD } = require("../lib/server");
 const hooks = require("../lib/hooks");
 
 const argv = process.argv.slice(2);
@@ -24,6 +26,26 @@ function openBrowser(url) {
       ? `start "" "${url}"`
       : `xdg-open "${url}"`;
   exec(c, () => {});
+}
+
+// Best-effort: kill whatever is listening on `port`, then wait for it to actually
+// release the socket before calling back (so a fresh server can bind without
+// EADDRINUSE). Platform-aware like openBrowser; never throws.
+function killPort(port, cb) {
+  const c =
+    process.platform === "win32"
+      ? `for /f "tokens=5" %a in ('netstat -ano ^| findstr :${port} ^| findstr LISTENING') do taskkill /F /PID %a`
+      : `lsof -ti tcp:${port} -sTCP:LISTEN | xargs kill 2>/dev/null`;
+  exec(c, () => {
+    let tries = 0;
+    (function waitGone() {
+      pingServer(port, (alive) => {
+        if (!alive) return cb();
+        if (++tries >= 10) return cb(); // ~2s; give up and try anyway
+        setTimeout(waitGone, 200);
+      });
+    })();
+  });
 }
 
 function scopeLabel(s) {
@@ -75,34 +97,93 @@ function postEvent(port, name, body, cb) {
   req.end(payload);
 }
 
-// Self-bootstrapping hook entry: ensure the server is up, then post `event`.
-// If the server is already live we just post (no new browser tab). On a cold
-// start we spawn a detached background server, open the game once, wait for it
-// to answer, then post. Must stay fast and never throw — UserPromptSubmit blocks
-// the prompt until this returns.
-function runHook(port, event) {
-  pingServer(port, (alive) => {
-    if (alive) return postEvent(port, event, null, () => process.exit(0));
-
-    // Cold start: detached server survives this short-lived process.
-    try {
-      spawn(process.execPath, [__filename, "start", "--no-open", "--port", String(port)], {
-        detached: true,
-        stdio: "ignore",
-      }).unref();
-    } catch {
-      return process.exit(0);
-    }
-    openBrowser(`http://localhost:${port}`);
-
-    let tries = 0;
-    (function waitUp() {
-      pingServer(port, (up) => {
-        if (up) return postEvent(port, event, null, () => process.exit(0));
-        if (++tries >= 10) return process.exit(0); // ~2s max, give up quietly
-        setTimeout(waitUp, 200);
+// Fetch the latest published version from the npm registry. The /latest endpoint
+// returns a slim manifest; we only read `.version`. Never throws — any
+// network/parse/timeout error comes back through `cb(err)`.
+function fetchLatestVersion(cb) {
+  const req = https.get(
+    {
+      host: "registry.npmjs.org",
+      path: "/agent-arcade/latest",
+      timeout: 3000,
+      headers: { Accept: "application/json" },
+    },
+    (res) => {
+      let d = "";
+      res.on("data", (c) => (d += c));
+      res.on("end", () => {
+        try {
+          const v = JSON.parse(d).version;
+          if (!v) throw new Error("no version in registry response");
+          cb(null, v);
+        } catch (e) {
+          cb(e);
+        }
       });
-    })();
+    }
+  );
+  req.on("error", cb);
+  req.on("timeout", () => {
+    req.destroy();
+    cb(new Error("timed out"));
+  });
+}
+
+// True if version `a` is strictly greater than `b`. Zero-dep semver-lite: compares
+// the three numeric segments; any `-prerelease` suffix is dropped, so `1.2.0-rc.1`
+// is treated as `1.2.0` (fine for this CLI's needs).
+function semverGt(a, b) {
+  const parse = (v) =>
+    String(v).split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+  const [x, y] = [parse(a), parse(b)];
+  for (let i = 0; i < 3; i++) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  }
+  return false;
+}
+
+// Cold start: spawn a detached server seeded to `event` (so the game shows the
+// right state even if the follow-up post is slow/dropped), open the game once,
+// wait for the server to answer, then post and exit. The detached server survives
+// this short-lived process.
+function coldStart(port, event) {
+  try {
+    spawn(process.execPath, [__filename, "start", "--no-open", "--port", String(port), "--state", event], {
+      detached: true,
+      stdio: "ignore",
+    }).unref();
+  } catch {
+    return process.exit(0);
+  }
+  openBrowser(`http://localhost:${port}`);
+
+  let tries = 0;
+  (function waitUp() {
+    pingServer(port, (up) => {
+      if (up) return postEvent(port, event, null, () => process.exit(0));
+      if (++tries >= 10) return process.exit(0); // ~2s max, give up quietly
+      setTimeout(waitUp, 200);
+    });
+  })();
+}
+
+// Self-bootstrapping hook entry: ensure a CURRENT-build server is up, then post
+// `event`. If a live server is running stale code (an old npx-cached copy squatting
+// on the port — its `build` differs from ours, or is absent), kill it and cold-start
+// fresh; otherwise just post (reopening the game only if no tab is watching). Must
+// stay fast and never throw — UserPromptSubmit blocks the prompt until this returns.
+function runHook(port, event) {
+  pingServer(port, (alive, state) => {
+    if (alive) {
+      if (!state || state.build !== BUILD) {
+        // Stale/old server holding the port — replace it with current code.
+        return killPort(port, () => coldStart(port, event));
+      }
+      // Current build, but no tab is watching (closed/never opened) — reopen the game.
+      if (!state.watched) openBrowser(`http://localhost:${port}`);
+      return postEvent(port, event, null, () => process.exit(0));
+    }
+    coldStart(port, event);
   });
 }
 
@@ -186,6 +267,7 @@ Usage:
   npx agent-arcade install        Add the hooks to Claude Code settings
   npx agent-arcade verify         Check hooks are installed, valid, and live
   npx agent-arcade uninstall      Remove only the hooks we added
+  npx agent-arcade update         Check npm and upgrade to the latest version
   npx agent-arcade help
 
   (npx agent-arcade hook <event>  internal — run by the installed prompt hook)
@@ -199,6 +281,7 @@ Flags:
                   Default is the safe, always-valid empty matcher.
   --no-autostart  (install) Don't auto-launch the game on prompt; assume you
                   started the server yourself. Default: auto-launch is on.
+  --no-gitignore  (install) Don't patch the repo .gitignore with local artifacts
   --global        Target ~/.claude/settings.json (all projects)
   --shared        Target ./.claude/settings.json (committed to the repo)
                   default: ./.claude/settings.local.json (personal, gitignored)
@@ -219,16 +302,24 @@ if (cmd === "help" || flag("help") || flag("h")) {
 if (cmd === "install") {
   try {
     const scope = scopeFromFlags();
-    const { file, backedUp, precise, autostart } = hooks.install({
+    const { file, backedUp, precise, autostart, gitignore: gitignoreResult } = hooks.install({
       port: PORT,
       scope,
       precise: flag("precise"),
       autostart: !flag("no-autostart"),
+      gitignore: !flag("no-gitignore"),
     });
     console.log(`✓ Installed agent-arcade hooks → ${scopeLabel(scope)}`);
     console.log(`  ${file}${backedUp ? "  (backup: .bak)" : ""}`);
     console.log(`  Port ${PORT}  ·  Notification matcher: ${precise ? "permission_prompt + idle_prompt" : "all (empty)"}`);
     console.log(`  Auto-launch on prompt: ${autostart ? "on (game opens itself)" : "off (start the server yourself)"}`);
+    if (gitignoreResult) {
+      if (gitignoreResult.added.length) {
+        console.log(`  Added to .gitignore: ${gitignoreResult.added.join(", ")}`);
+      } else {
+        console.log(`  · .gitignore already covers agent-arcade artifacts`);
+      }
+    }
     console.log(`\n→ Restart Claude Code, then ${autostart ? "just send a prompt — the game launches itself." : "run:  npx agent-arcade"}`);
     console.log(`  (Check anytime with:  npx agent-arcade verify)`);
   } catch (e) {
@@ -292,6 +383,36 @@ if (cmd === "install") {
     console.log(`UserPromptSubmit · PreToolUse · Notification · Stop are listed.`);
     console.log(`(If they're missing, Claude Code rejected the settings — fix JSON, reinstall.)`);
   });
+} else if (cmd === "update") {
+  fetchLatestVersion((err, latest) => {
+    if (err) {
+      console.log(`·  Couldn't reach npm (${err.message}). You're on v${CURRENT}.`);
+      process.exit(0);
+    }
+    if (!semverGt(latest, CURRENT)) {
+      console.log(`✓ Already up to date (v${CURRENT}).`);
+      process.exit(0);
+    }
+    console.log(`Updating v${CURRENT} → v${latest} …\n`);
+    const npm = spawn("npm", ["install", "-g", "agent-arcade@" + latest], {
+      stdio: "inherit",
+    });
+    npm.on("error", (e) => {
+      console.error(`✗ Couldn't run npm: ${e.message}`);
+      process.exit(1);
+    });
+    npm.on("close", (code) => {
+      if (code === 0) {
+        console.log(`\n✓ Updated to v${latest}.`);
+        process.exit(0);
+      }
+      console.error(
+        `\n✗ npm exited with code ${code}. If it's a permissions error, ` +
+          `re-run with the rights to install globally.`
+      );
+      process.exit(1);
+    });
+  });
 } else if (cmd === "hook") {
   // Internal: invoked by the installed UserPromptSubmit hook.
   const event = argv.find((a) => !a.startsWith("-") && a !== "hook") || "working";
@@ -314,7 +435,10 @@ if (cmd === "install") {
     process.exit(1);
   });
 } else if (cmd === "start") {
-  const server = createServer();
+  // --state seeds the initial agent state. The cold-start server the prompt hook
+  // spawns boots straight into `working`, so the open tab shows the game even if
+  // the follow-up `working` POST is slow or dropped.
+  const server = createServer({ initialAgent: opt("state", null) });
   server.listen(PORT, "127.0.0.1", () => {
     const url = `http://localhost:${PORT}`;
     console.log(`Agent Arcade → ${url}  (Ctrl-C to stop)`);

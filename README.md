@@ -47,6 +47,7 @@ npx github:gonshi10/agent-arcade install
 | `--port <n>` | port for server **and** installed hooks (default `4317`) |
 | `--precise` | narrow `Notification` to `permission_prompt` + `idle_prompt` (less noise) |
 | `--no-autostart` | (`install`) don't auto-launch the game on prompt; start the server yourself. Default: auto-launch on |
+| `--no-gitignore` | (`install`) don't patch the repo `.gitignore` with local artifacts |
 | `--global` | write to `~/.claude/settings.json` (all projects) |
 | `--shared` | write to `./.claude/settings.json` (committed to the repo) |
 | *(default)* | `./.claude/settings.local.json` — personal, gitignored |
@@ -74,7 +75,9 @@ silently no-ops and can never stall your agent.
 `install` deep-merges and **never touches your existing hooks**. Every command it
 adds carries a `#agent-arcade` marker, so re-running updates in place (no
 duplicates) and `uninstall` removes exactly those and nothing else. Your file is
-backed up to `*.bak` before any write.
+backed up to `*.bak` before any write. For repo-local scopes (`local` and
+`shared`), `install` also idempotently patches the git root's `.gitignore` so
+the settings file and backup stay untracked — use `--no-gitignore` to skip that.
 
 > ⚠ **The footgun this guards against:** since claude-code v1.0.95, *any* invalid
 > `settings.json` silently disables **all** hooks in that file. agent-arcade only

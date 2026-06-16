@@ -15,7 +15,7 @@ const os = require("os");
 const path = require("path");
 const { execFile } = require("child_process");
 
-const { createServer } = require("../lib/server");
+const { createServer, BUILD } = require("../lib/server");
 const hooks = require("../lib/hooks");
 
 const BIN = path.join(__dirname, "..", "bin", "agent-arcade.js");
@@ -94,6 +94,42 @@ test("done sets agent to done", withServer(async (port) => {
 test("unknown event returns 404", withServer(async (port) => {
   const { status } = await request(port, "POST", "/event/nope");
   assert.equal(status, 404);
+}));
+
+test("only ?watch=1 polls mark the game as watched", withServer(async (port) => {
+  // Plain /state (the CLI's liveness ping) must NOT count as a watcher.
+  const ping = await request(port, "GET", "/state");
+  assert.equal(ping.body.watched, false, "bare /state should not mark watched");
+
+  // A real browser poll carries ?watch=1.
+  const watch = await request(port, "GET", "/state?watch=1");
+  assert.equal(watch.body.watched, true, "?watch=1 should mark watched");
+
+  // The tab closing flips it back immediately.
+  await request(port, "POST", "/event/closed");
+  const after = await request(port, "GET", "/state");
+  assert.equal(after.body.watched, false, "/event/closed should clear watched");
+}));
+
+test("createServer seeds the initial agent state (cold-start working)", async () => {
+  // The prompt hook cold-starts the server with --state working so the open tab
+  // shows the game even if the follow-up `working` POST never lands.
+  const server = createServer({ initialAgent: "working" });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  try {
+    const { body } = await request(port, "GET", "/state");
+    assert.equal(body.agent, "working", "seeded agent should be working");
+    assert.equal(body.tools, 0);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test("/state reports the build identity (for stale-server detection)", withServer(async (port) => {
+  const { body } = await request(port, "GET", "/state");
+  assert.ok(typeof body.build === "string" && body.build.length > 0, "build should be present");
+  assert.equal(body.build, BUILD, "/state build should match the exported BUILD");
 }));
 
 // --- 1b. buildHooks: auto-launch UserPromptSubmit ----------------------------
@@ -185,4 +221,92 @@ test("uninstall removes only ours and prunes empty events", () => {
   }
 
   fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+// --- 3. installer: gitignore handling ----------------------------------------
+
+function tmpGitRepo() {
+  const cwd = tmpCwd();
+  fs.mkdirSync(path.join(cwd, ".git"));
+  return cwd;
+}
+
+function readGitignore(cwd) {
+  const file = path.join(cwd, ".gitignore");
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+}
+
+test("local install adds settings.local.json and .bak to .gitignore", () => {
+  const cwd = tmpGitRepo();
+  hooks.install({ scope: "local", cwd });
+  const text = readGitignore(cwd);
+  assert.match(text, /\.claude\/settings\.local\.json/);
+  assert.match(text, /\.claude\/settings\.local\.json\.bak/);
+  assert.match(text, /# agent-arcade/);
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("local install is idempotent in .gitignore", () => {
+  const cwd = tmpGitRepo();
+  hooks.install({ scope: "local", cwd });
+  const first = readGitignore(cwd);
+  hooks.install({ scope: "local", cwd });
+  const second = readGitignore(cwd);
+  assert.equal(first, second, ".gitignore should not change on re-install");
+  assert.equal(
+    second.split(".claude/settings.local.json.bak").length - 1,
+    1,
+    ".bak pattern should appear exactly once"
+  );
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("local install respects pre-existing .gitignore patterns", () => {
+  const cwd = tmpGitRepo();
+  fs.writeFileSync(
+    path.join(cwd, ".gitignore"),
+    "# Claude Code local overrides\n.claude/settings.local.json\n"
+  );
+  hooks.install({ scope: "local", cwd });
+  const text = readGitignore(cwd);
+  assert.equal(
+    text.split(".claude/settings.local.json\n").length - 1,
+    1,
+    "settings.local.json should not be duplicated"
+  );
+  assert.match(text, /\.claude\/settings\.local\.json\.bak/);
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("shared install adds only settings.json.bak to .gitignore", () => {
+  const cwd = tmpGitRepo();
+  hooks.install({ scope: "shared", cwd });
+  const text = readGitignore(cwd);
+  assert.match(text, /\.claude\/settings\.json\.bak/);
+  assert.doesNotMatch(text, /^\.claude\/settings\.json$/m);
+  fs.rmSync(cwd, { recursive: true, force: true });
+});
+
+test("global install and non-git cwd skip .gitignore", () => {
+  const noGit = tmpCwd();
+  hooks.install({ scope: "local", cwd: noGit });
+  assert.ok(!fs.existsSync(path.join(noGit, ".gitignore")));
+  fs.rmSync(noGit, { recursive: true, force: true });
+
+  assert.deepEqual(hooks.gitignorePatternsForScope("global"), []);
+});
+
+test("global install does not patch repo .gitignore", () => {
+  const cwd = tmpGitRepo();
+  const home = tmpCwd();
+  const oldHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    hooks.install({ scope: "global", cwd });
+    assert.equal(readGitignore(cwd), "");
+  } finally {
+    process.env.HOME = oldHome;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
