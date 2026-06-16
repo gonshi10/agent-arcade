@@ -44,6 +44,17 @@
     font-size:11px; text-transform:uppercase; letter-spacing:.1em;
     padding:4px 10px; border-radius:999px; border:1px solid var(--line); color:var(--dim);
   }
+  .controls{
+    width:520px; max-width:92vw; display:flex; gap:10px; justify-content:center;
+  }
+  .ctl{
+    flex:1; font-family:var(--mono); font-size:12px; letter-spacing:.04em;
+    padding:9px 12px; border-radius:10px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line); color:var(--dim);
+    transition:border-color .12s, color .12s, background .12s;
+  }
+  .ctl:hover{color:var(--ink)}
+  .ctl.active{border-color:var(--accent); color:var(--accent); background:rgba(55,224,160,.08)}
   .foot{width:520px; max-width:92vw; color:var(--dim); font-size:11px; line-height:1.6}
   kbd{background:#000; border:1px solid var(--line); border-radius:4px; padding:1px 5px; color:var(--ink)}
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-right:6px;vertical-align:middle}
@@ -75,6 +86,11 @@
       <h1 id="ovtitle">—</h1>
       <p id="ovbody">—</p>
     </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button id="btnResume" class="ctl active" type="button">⏸ Stop — keep game</button>
+    <button id="btnRestart" class="ctl" type="button">↻ Restart — start over</button>
   </div>
 
   <div class="foot">
@@ -163,6 +179,9 @@ addEventListener("keydown",e=>{
 
 // ---------- state machine driven by the server ----------
 let agent="idle", lastSeq=-1;
+// Player's choice for what happens when the agent resumes working after a pause:
+// false = keep playing the same game (Stop), true = start a fresh round (Restart).
+let restartOnResume=false;
 const overlay=document.getElementById("overlay");
 
 function setOverlay(kind,title,body,pill){
@@ -186,7 +205,8 @@ function applyState(s){
   if(agent==="working"){
     st.textContent="working — play";
     if(prev!=="working"){
-      if(!alive) reset(); // last round ended → fresh start; otherwise resume the paused game
+      // player chose Restart, or the last round had ended → fresh start; else resume in place
+      if(restartOnResume || !alive) reset();
       hideOverlay();
     }
   }else if(agent==="waiting"){
@@ -218,6 +238,17 @@ function tryNotify(msg){
 }
 addEventListener("focus",clearFlash);
 addEventListener("click",()=>{ if(!actx) beep(0,0.001); if(Notification?.permission==="default") Notification.requestPermission(); });
+
+// ---------- resume-vs-restart controls ----------
+const btnResume=document.getElementById("btnResume"), btnRestart=document.getElementById("btnRestart");
+function setMode(restart, el){
+  restartOnResume=restart;
+  btnResume.classList.toggle("active",!restart);
+  btnRestart.classList.toggle("active",restart);
+  if(el) el.blur(); // release focus so arrow/WASD keep driving the snake
+}
+btnResume.addEventListener("click",()=>setMode(false,btnResume));
+btnRestart.addEventListener("click",()=>setMode(true,btnRestart));
 
 // ---------- loops ----------
 async function poll(){
