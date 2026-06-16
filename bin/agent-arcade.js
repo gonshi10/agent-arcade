@@ -4,7 +4,7 @@ const http = require("http");
 const https = require("https");
 const { exec, spawn } = require("child_process");
 const CURRENT = require("../package.json").version;
-const { createServer } = require("../lib/server");
+const { createServer, BUILD } = require("../lib/server");
 const hooks = require("../lib/hooks");
 
 const argv = process.argv.slice(2);
@@ -26,6 +26,26 @@ function openBrowser(url) {
       ? `start "" "${url}"`
       : `xdg-open "${url}"`;
   exec(c, () => {});
+}
+
+// Best-effort: kill whatever is listening on `port`, then wait for it to actually
+// release the socket before calling back (so a fresh server can bind without
+// EADDRINUSE). Platform-aware like openBrowser; never throws.
+function killPort(port, cb) {
+  const c =
+    process.platform === "win32"
+      ? `for /f "tokens=5" %a in ('netstat -ano ^| findstr :${port} ^| findstr LISTENING') do taskkill /F /PID %a`
+      : `lsof -ti tcp:${port} -sTCP:LISTEN | xargs kill 2>/dev/null`;
+  exec(c, () => {
+    let tries = 0;
+    (function waitGone() {
+      pingServer(port, (alive) => {
+        if (!alive) return cb();
+        if (++tries >= 10) return cb(); // ~2s; give up and try anyway
+        setTimeout(waitGone, 200);
+      });
+    })();
+  });
 }
 
 function scopeLabel(s) {
@@ -122,38 +142,48 @@ function semverGt(a, b) {
   return false;
 }
 
-// Self-bootstrapping hook entry: ensure the server is up, then post `event`.
-// If the server is already live we just post (no new browser tab). On a cold
-// start we spawn a detached background server, open the game once, wait for it
-// to answer, then post. Must stay fast and never throw — UserPromptSubmit blocks
-// the prompt until this returns.
+// Cold start: spawn a detached server seeded to `event` (so the game shows the
+// right state even if the follow-up post is slow/dropped), open the game once,
+// wait for the server to answer, then post and exit. The detached server survives
+// this short-lived process.
+function coldStart(port, event) {
+  try {
+    spawn(process.execPath, [__filename, "start", "--no-open", "--port", String(port), "--state", event], {
+      detached: true,
+      stdio: "ignore",
+    }).unref();
+  } catch {
+    return process.exit(0);
+  }
+  openBrowser(`http://localhost:${port}`);
+
+  let tries = 0;
+  (function waitUp() {
+    pingServer(port, (up) => {
+      if (up) return postEvent(port, event, null, () => process.exit(0));
+      if (++tries >= 10) return process.exit(0); // ~2s max, give up quietly
+      setTimeout(waitUp, 200);
+    });
+  })();
+}
+
+// Self-bootstrapping hook entry: ensure a CURRENT-build server is up, then post
+// `event`. If a live server is running stale code (an old npx-cached copy squatting
+// on the port — its `build` differs from ours, or is absent), kill it and cold-start
+// fresh; otherwise just post (reopening the game only if no tab is watching). Must
+// stay fast and never throw — UserPromptSubmit blocks the prompt until this returns.
 function runHook(port, event) {
   pingServer(port, (alive, state) => {
     if (alive) {
-      // Server's up but no tab is watching (closed/never opened) — reopen the game.
-      if (state && !state.watched) openBrowser(`http://localhost:${port}`);
+      if (!state || state.build !== BUILD) {
+        // Stale/old server holding the port — replace it with current code.
+        return killPort(port, () => coldStart(port, event));
+      }
+      // Current build, but no tab is watching (closed/never opened) — reopen the game.
+      if (!state.watched) openBrowser(`http://localhost:${port}`);
       return postEvent(port, event, null, () => process.exit(0));
     }
-
-    // Cold start: detached server survives this short-lived process.
-    try {
-      spawn(process.execPath, [__filename, "start", "--no-open", "--port", String(port), "--state", event], {
-        detached: true,
-        stdio: "ignore",
-      }).unref();
-    } catch {
-      return process.exit(0);
-    }
-    openBrowser(`http://localhost:${port}`);
-
-    let tries = 0;
-    (function waitUp() {
-      pingServer(port, (up) => {
-        if (up) return postEvent(port, event, null, () => process.exit(0));
-        if (++tries >= 10) return process.exit(0); // ~2s max, give up quietly
-        setTimeout(waitUp, 200);
-      });
-    })();
+    coldStart(port, event);
   });
 }
 

@@ -15,7 +15,7 @@ const os = require("os");
 const path = require("path");
 const { execFile } = require("child_process");
 
-const { createServer } = require("../lib/server");
+const { createServer, BUILD } = require("../lib/server");
 const hooks = require("../lib/hooks");
 
 const BIN = path.join(__dirname, "..", "bin", "agent-arcade.js");
@@ -125,6 +125,12 @@ test("createServer seeds the initial agent state (cold-start working)", async ()
     await new Promise((r) => server.close(r));
   }
 });
+
+test("/state reports the build identity (for stale-server detection)", withServer(async (port) => {
+  const { body } = await request(port, "GET", "/state");
+  assert.ok(typeof body.build === "string" && body.build.length > 0, "build should be present");
+  assert.equal(body.build, BUILD, "/state build should match the exported BUILD");
+}));
 
 // --- 1b. buildHooks: auto-launch UserPromptSubmit ----------------------------
 
