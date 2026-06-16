@@ -185,7 +185,10 @@ function applyState(s){
 
   if(agent==="working"){
     st.textContent="working — play";
-    if(prev!=="working"){ reset(); hideOverlay(); }
+    if(prev!=="working"){
+      if(!alive) reset(); // last round ended → fresh start; otherwise resume the paused game
+      hideOverlay();
+    }
   }else if(agent==="waiting"){
     st.textContent="NEEDS YOU";
     setOverlay("alert","⚠  Agent needs you", s.reason||"Permission or input required.","get back");
