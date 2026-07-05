@@ -26,6 +26,24 @@
  *       finishes a turn, and (by default) when the game is won — exposed for
  *       reuse.
  *
+ *   Shell.watch({ onPoll, onTransition, onOffline })
+ *       The page-agnostic half of the driver, usable on pages that have no
+ *       game/HUD at all (e.g. the dashboard picker). Starts polling
+ *       `/state?watch=1` every 200ms and, for as long as the page lives,
+ *       owns: tab-title flashing + Notification permission/dispatch on
+ *       entering waiting/done, the WebAudio-unlock-on-click listener, the
+ *       alert/done chime on entering waiting/done (deduped so re-entering the
+ *       same state doesn't replay it), and the `pagehide` -> POST
+ *       /event/closed beacon. `Shell.boot()` is built on top of this.
+ *       Callbacks:
+ *         onPoll(state)              called after every successful poll.
+ *         onTransition(state, prevAgent)  called only when the polled agent
+ *                                     or seq actually changed since the last
+ *                                     poll — `state.agent` is the new value.
+ *         onOffline()                called when the /state fetch fails.
+ *       All three are optional. Returns nothing; there's no way to stop a
+ *       watcher once started (pages calling this run it for their lifetime).
+ *
  *   Shell.isRunning()
  *       Callable getter. Returns true iff the game should currently be
  *       simulating / accepting input, i.e. not paused by the player and the
@@ -43,8 +61,8 @@
  *       document.title at call time and uses it as the "base title" that
  *       tab-title-flashing restores when the agent stops needing attention.
  *
- *       boot() wires up: the HUD, the /state?watch=1 poll loop (200ms) and
- *       its reaction to agent transitions (working/waiting/done/idle —
+ *       boot() wires up: the HUD, Shell.watch()'s /state poll loop and its
+ *       reaction to agent transitions (working/waiting/done/idle —
  *       waiting/done/idle auto-pause, never auto-start), the pause/waiting/
  *       done/crashed overlay, chimes + tab-title flashing + Notification
  *       permission request on transitions into waiting/done, the pagehide ->
@@ -137,6 +155,61 @@
   let running = true;
   function isRunning() { return running; }
 
+  // ---------- page-agnostic half: poll /state, chime + flash + notify ----------
+  // No dependency on any game/HUD DOM — usable standalone (e.g. the dashboard
+  // picker) as well as from boot() below.
+  function watch(handlers) {
+    handlers = handlers || {};
+
+    // Captured at call time so each page's own <title> is what gets restored
+    // once the agent stops needing attention.
+    const baseTitle = document.title;
+    let titleTimer = null;
+    function flashTitle(msg) {
+      clearInterval(titleTimer); let on = true;
+      titleTimer = setInterval(() => { document.title = on ? msg : baseTitle; on = !on; }, 700);
+      if (document.hidden) tryNotify(msg);
+    }
+    function clearFlash() { clearInterval(titleTimer); document.title = baseTitle; }
+    function tryNotify(msg) {
+      if (!("Notification" in window)) return;
+      if (Notification.permission === "granted") new Notification(msg);
+      else if (Notification.permission !== "denied") Notification.requestPermission();
+    }
+    addEventListener("focus", clearFlash);
+    addEventListener("click", () => {
+      if (!actx) beep(0, 0.001);
+      if (window.Notification && Notification.permission === "default") Notification.requestPermission();
+    });
+
+    let agent = "idle", lastSeq = -1;
+
+    async function poll() {
+      let s;
+      try {
+        const r = await fetch("/state?watch=1", { cache: "no-store" });
+        s = await r.json();
+      } catch (e) {
+        if (handlers.onOffline) handlers.onOffline();
+        return;
+      }
+      const transitioned = s.seq !== lastSeq || s.agent !== agent;
+      lastSeq = s.seq;
+      const prevAgent = agent;
+      agent = s.agent;
+      if (transitioned) {
+        if (agent === "waiting" && prevAgent !== "waiting") { alertChime(); flashTitle("🔔 AGENT NEEDS YOU"); }
+        else if (agent === "done" && prevAgent !== "done") { doneChime(); flashTitle("✓ AGENT DONE"); }
+        if (handlers.onTransition) handlers.onTransition(s, prevAgent);
+      }
+      if (handlers.onPoll) handlers.onPoll(s);
+    }
+    setInterval(poll, 200); poll();
+
+    // Tell the server the moment this tab goes away, so the next prompt reopens it.
+    addEventListener("pagehide", () => navigator.sendBeacon("/event/closed"));
+  }
+
   function boot(Game) {
     if (!Game) throw new Error("Shell.boot(Game): a Game object is required");
 
@@ -162,76 +235,6 @@
     }
     function hideOverlay() { overlay.className = "overlay"; }
 
-    // ---------- pull attention even when this tab/monitor isn't focused ----------
-    // Captured at boot-call time so each game page's own <title> (e.g.
-    // "Snake — Agent Arcade") is what gets restored, not a hardcoded string.
-    const baseTitle = document.title;
-    let titleTimer = null;
-    function flashTitle(msg) {
-      clearInterval(titleTimer); let on = true;
-      titleTimer = setInterval(() => { document.title = on ? msg : baseTitle; on = !on; }, 700);
-      if (document.hidden) tryNotify(msg);
-    }
-    function clearFlash() { clearInterval(titleTimer); document.title = baseTitle; }
-    function tryNotify(msg) {
-      if (!("Notification" in window)) return;
-      if (Notification.permission === "granted") new Notification(msg);
-      else if (Notification.permission !== "denied") Notification.requestPermission();
-    }
-    addEventListener("focus", clearFlash);
-    addEventListener("click", () => {
-      if (!actx) beep(0, 0.001);
-      if (window.Notification && Notification.permission === "default") Notification.requestPermission();
-    });
-
-    // ---------- state machine driven by the server ----------
-    let agent = "idle", lastSeq = -1;
-
-    function applyState(s) {
-      streakEl.textContent = (agent === "working" ? s.elapsed : 0).toFixed(1) + "s";
-      toolsEl.textContent = s.tools;
-      dot.className = "dot " + s.agent;
-
-      if (s.seq === lastSeq && s.agent === agent) return; // nothing new structurally
-      lastSeq = s.seq;
-      const prev = agent; agent = s.agent;
-
-      // Agent transitions never auto-start the game; waiting/done/idle
-      // auto-PAUSE it to pull attention. Only the player's Resume/Restart
-      // click sets `running` back to true.
-      if (agent === "working") {
-        status.textContent = running ? "working — play" : "working — paused";
-        if (!running) showPaused();
-        // if running, the loop keeps drawing and hides the overlay
-      } else if (agent === "waiting") {
-        setRunning(false);
-        status.textContent = "NEEDS YOU";
-        setOverlay("alert", "⚠  Agent needs you", (s.reason || "Permission or input required.") + "  ·  Resume or Restart when you're ready.", "needs you");
-        if (prev !== "waiting") { alertChime(); flashTitle("🔔 AGENT NEEDS YOU"); }
-      } else if (agent === "done") {
-        setRunning(false);
-        status.textContent = "done";
-        setOverlay("done", "✓  Agent finished", "Turn complete. Streak: " + s.elapsed.toFixed(1) + "s · " + s.tools + " tools.  ·  Resume or Restart to keep playing.", "finished");
-        if (prev !== "done") { doneChime(); flashTitle("✓ AGENT DONE"); }
-      } else { // idle
-        setRunning(false);
-        status.textContent = "idle";
-        setOverlay("idle", "Waiting for the agent", "Send a prompt in Claude Code — or Resume / Restart to play now.", "idle");
-      }
-    }
-
-    async function poll() {
-      try {
-        const r = await fetch("/state?watch=1", { cache: "no-store" });
-        applyState(await r.json());
-      } catch (e) {
-        status.textContent = "server offline";
-      }
-    }
-    setInterval(poll, 200); poll();
-    // Tell the server the moment this tab goes away, so the next prompt reopens it.
-    addEventListener("pagehide", () => navigator.sendBeacon("/event/closed"));
-
     // ---------- pause / resume / restart controls ----------
     // Single source of truth for `running`: keeps the toggle button (Pause⇄Resume) in sync.
     function setRunning(v) {
@@ -251,6 +254,41 @@
     }
     btnResume.addEventListener("click", () => { running ? pause() : play(false); btnResume.blur(); });
     btnRestart.addEventListener("click", () => { play(true); btnRestart.blur(); });
+
+    // ---------- state machine driven by the server ----------
+    watch({
+      onPoll(s) {
+        streakEl.textContent = (s.agent === "working" ? s.elapsed : 0).toFixed(1) + "s";
+        toolsEl.textContent = s.tools;
+        dot.className = "dot " + s.agent;
+      },
+      onOffline() {
+        status.textContent = "server offline";
+      },
+      // Agent transitions never auto-start the game; waiting/done/idle
+      // auto-PAUSE it to pull attention. Only the player's Resume/Restart
+      // click sets `running` back to true. (The alert/done chime + tab-title
+      // flash for entering waiting/done is handled by watch() itself.)
+      onTransition(s) {
+        if (s.agent === "working") {
+          status.textContent = running ? "working — play" : "working — paused";
+          if (!running) showPaused();
+          // if running, the loop keeps drawing and hides the overlay
+        } else if (s.agent === "waiting") {
+          setRunning(false);
+          status.textContent = "NEEDS YOU";
+          setOverlay("alert", "⚠  Agent needs you", (s.reason || "Permission or input required.") + "  ·  Resume or Restart when you're ready.", "needs you");
+        } else if (s.agent === "done") {
+          setRunning(false);
+          status.textContent = "done";
+          setOverlay("done", "✓  Agent finished", "Turn complete. Streak: " + s.elapsed.toFixed(1) + "s · " + s.tools + " tools.  ·  Resume or Restart to keep playing.", "finished");
+        } else { // idle
+          setRunning(false);
+          status.textContent = "idle";
+          setOverlay("idle", "Waiting for the agent", "Send a prompt in Claude Code — or Resume / Restart to play now.", "idle");
+        }
+      },
+    });
 
     // ---------- input: one listener, forwarded to the game while running ----------
     addEventListener("keydown", (e) => {
@@ -293,5 +331,5 @@
     requestAnimationFrame(loop);
   }
 
-  window.Shell = { beep, alertChime, doneChime, isRunning, boot };
+  window.Shell = { beep, alertChime, doneChime, isRunning, watch, boot };
 })();

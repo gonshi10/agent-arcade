@@ -62,6 +62,13 @@
     width:100%; max-width:760px; color:var(--dim); font-size:11px;
     line-height:1.6; text-align:center;
   }
+
+  /* The picker has no .stage(position:relative) wrapper like game pages do,
+     so shell.css's .overlay(position:absolute) would anchor to the initial
+     containing block instead of a predictable box — pin it to the viewport
+     explicitly instead, and drop the game-page corner radius. */
+  #overlay{ position:fixed; border-radius:0; z-index:10; }
+  #overlay .ctl{ flex:none; min-width:160px; }
 </style>
 </head>
 <body>
@@ -71,6 +78,13 @@
     <p>Play a game while your Claude Code agent works — pick one below.<br>
       We'll freeze the action and pull you back the instant it needs you.</p>
   </header>
+
+  <div id="overlay" class="overlay">
+    <span class="pill" id="ovpill">—</span>
+    <h1 id="ovtitle">—</h1>
+    <p id="ovbody">—</p>
+    <button id="btnAck" class="ctl" type="button">Got it</button>
+  </div>
 
   <main class="grid" id="grid">
     <button type="button" class="card" data-id="snake">
@@ -105,6 +119,7 @@
     <kbd>⌂ Change game</kbd> link to come back here.
   </p>
 
+<script src="shell.js"></script>
 <script>
   (function () {
     var grid = document.getElementById("grid");
@@ -114,6 +129,33 @@
       var id = card.getAttribute("data-id");
       try { window.localStorage.setItem("agent-arcade:lastGame", id); } catch (e) {}
       window.location.href = "/games/" + id + ".html";
+    });
+
+    // No game/HUD on this page — just the alert half of the shell, so the
+    // agent can still yank you back while you're deciding what to play.
+    var overlay = document.getElementById("overlay");
+    var ovpill = document.getElementById("ovpill");
+    var ovtitle = document.getElementById("ovtitle");
+    var ovbody = document.getElementById("ovbody");
+    document.getElementById("btnAck").addEventListener("click", function () {
+      overlay.className = "overlay";
+    });
+    Shell.watch({
+      onTransition: function (s) {
+        if (s.agent === "waiting") {
+          overlay.className = "overlay show alert";
+          ovpill.textContent = "needs you";
+          ovtitle.textContent = "⚠  Agent needs you";
+          ovbody.textContent = (s.reason || "Permission or input required.") + "  ·  Pick a game, or dismiss.";
+        } else if (s.agent === "done") {
+          overlay.className = "overlay show done";
+          ovpill.textContent = "finished";
+          ovtitle.textContent = "✓  Agent finished";
+          ovbody.textContent = "Turn complete. Streak: " + s.elapsed.toFixed(1) + "s · " + s.tools + " tools.";
+        } else {
+          overlay.className = "overlay";
+        }
+      },
     });
   })();
 </script>
