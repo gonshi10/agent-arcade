@@ -130,6 +130,19 @@ test("only ?watch=1 polls mark the game as watched", withServer(async (port) => 
   assert.equal(after.body.watched, false, "/event/closed should clear watched");
 }));
 
+test("closing one tab doesn't clear another open tab's watched status", withServer(async (port) => {
+  await request(port, "GET", "/state?watch=1&tab=picker");
+  await request(port, "GET", "/state?watch=1&tab=game");
+
+  await request(port, "POST", "/event/closed?tab=picker");
+  const after = await request(port, "GET", "/state");
+  assert.equal(after.body.watched, true, "the still-open 'game' tab should keep watched true");
+
+  await request(port, "POST", "/event/closed?tab=game");
+  const final = await request(port, "GET", "/state");
+  assert.equal(final.body.watched, false, "closing the last open tab should clear watched");
+}));
+
 test("createServer seeds the initial agent state (cold-start working)", async () => {
   // The prompt hook cold-starts the server with --state working so the open tab
   // shows the game even if the follow-up `working` POST never lands.

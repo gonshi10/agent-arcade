@@ -44,6 +44,15 @@
  *       All three are optional. Returns nothing; there's no way to stop a
  *       watcher once started (pages calling this run it for their lifetime).
  *
+ *   Shell.overlayController({ overlay, title, body, pill })
+ *       Factory sharing the class/textContent mechanics for driving an
+ *       `.overlay` element (see shell.css), given its four DOM refs. Returns
+ *       `{ set(kind, title, body, pill), hide() }`. `boot()` uses this for
+ *       the game-page overlay; the dashboard picker (public/index.html)
+ *       builds its own instance from its own refs since it has no Game/HUD
+ *       to hang a `boot()` call off of. Copy strings are supplied by each
+ *       caller — only the class-toggling mechanics are shared.
+ *
  *   Shell.isRunning()
  *       Callable getter. Returns true iff the game should currently be
  *       simulating / accepting input, i.e. not paused by the player and the
@@ -155,6 +164,18 @@
   let running = true;
   function isRunning() { return running; }
 
+  // ---------- shared overlay-driving mechanics (no HUD/Game dependency) ----------
+  function overlayController(els) {
+    function set(kind, title, body, pill) {
+      els.overlay.className = "overlay show " + kind;
+      els.title.textContent = title;
+      els.body.textContent = body;
+      els.pill.textContent = pill;
+    }
+    function hide() { els.overlay.className = "overlay"; }
+    return { set, hide };
+  }
+
   // ---------- page-agnostic half: poll /state, chime + flash + notify ----------
   // No dependency on any game/HUD DOM — usable standalone (e.g. the dashboard
   // picker) as well as from boot() below.
@@ -183,11 +204,15 @@
     });
 
     let agent = "idle", lastSeq = -1;
+    // Identifies this page's poll loop to the server, so it tracks each open
+    // tab's watched status independently — closing one tab (e.g. the picker)
+    // shouldn't clear another tab's (e.g. a running game's) watched status.
+    const tabId = Math.random().toString(36).slice(2);
 
     async function poll() {
       let s;
       try {
-        const r = await fetch("/state?watch=1", { cache: "no-store" });
+        const r = await fetch("/state?watch=1&tab=" + tabId, { cache: "no-store" });
         s = await r.json();
       } catch (e) {
         if (handlers.onOffline) handlers.onOffline();
@@ -207,7 +232,7 @@
     setInterval(poll, 200); poll();
 
     // Tell the server the moment this tab goes away, so the next prompt reopens it.
-    addEventListener("pagehide", () => navigator.sendBeacon("/event/closed"));
+    addEventListener("pagehide", () => navigator.sendBeacon("/event/closed?tab=" + tabId));
   }
 
   function boot(Game) {
@@ -227,13 +252,7 @@
     const btnResume = document.getElementById("btnResume");
     const btnRestart = document.getElementById("btnRestart");
 
-    function setOverlay(kind, title, body, pill) {
-      overlay.className = "overlay show " + kind;
-      ovtitle.textContent = title;
-      ovbody.textContent = body;
-      ovpill.textContent = pill;
-    }
-    function hideOverlay() { overlay.className = "overlay"; }
+    const ov = overlayController({ overlay, title: ovtitle, body: ovbody, pill: ovpill });
 
     // ---------- pause / resume / restart controls ----------
     // Single source of truth for `running`: keeps the toggle button (Pause⇄Resume) in sync.
@@ -243,13 +262,13 @@
       btnResume.classList.toggle("active", v); // accent while the game is live
     }
     function showPaused() {
-      setOverlay("idle", "⏸  Paused", "Game paused. Resume to keep playing, or Restart for a new round.", "paused");
+      ov.set("idle", "⏸  Paused", "Game paused. Resume to keep playing, or Restart for a new round.", "paused");
     }
     function pause() { setRunning(false); showPaused(); }
     function play(restart) {
       if (restart || !Game.alive) Game.reset(); // Restart, or reviving a finished round → fresh round
       setRunning(true);
-      hideOverlay();
+      ov.hide();
       if (actx && actx.state === "suspended") actx.resume(); // a click is a user gesture
     }
     btnResume.addEventListener("click", () => { running ? pause() : play(false); btnResume.blur(); });
@@ -277,15 +296,15 @@
         } else if (s.agent === "waiting") {
           setRunning(false);
           status.textContent = "NEEDS YOU";
-          setOverlay("alert", "⚠  Agent needs you", (s.reason || "Permission or input required.") + "  ·  Resume or Restart when you're ready.", "needs you");
+          ov.set("alert", "⚠  Agent needs you", (s.reason || "Permission or input required.") + "  ·  Resume or Restart when you're ready.", "needs you");
         } else if (s.agent === "done") {
           setRunning(false);
           status.textContent = "done";
-          setOverlay("done", "✓  Agent finished", "Turn complete. Streak: " + s.elapsed.toFixed(1) + "s · " + s.tools + " tools.  ·  Resume or Restart to keep playing.", "finished");
+          ov.set("done", "✓  Agent finished", "Turn complete. Streak: " + s.elapsed.toFixed(1) + "s · " + s.tools + " tools.  ·  Resume or Restart to keep playing.", "finished");
         } else { // idle
           setRunning(false);
           status.textContent = "idle";
-          setOverlay("idle", "Waiting for the agent", "Send a prompt in Claude Code — or Resume / Restart to play now.", "idle");
+          ov.set("idle", "Waiting for the agent", "Send a prompt in Claude Code — or Resume / Restart to play now.", "idle");
         }
       },
     });
@@ -310,17 +329,17 @@
           overEventHandled = true;
           if (Game.won) {
             doneChime();
-            setOverlay("done", Game.overTitle || DEFAULT_WIN_TITLE, Game.overBody || DEFAULT_WIN_BODY, "won");
+            ov.set("done", Game.overTitle || DEFAULT_WIN_TITLE, Game.overBody || DEFAULT_WIN_BODY, "won");
           } else {
             alertChime();
-            setOverlay("alert", Game.overTitle || DEFAULT_CRASH_TITLE, Game.overBody || DEFAULT_CRASH_BODY, "crashed");
+            ov.set("alert", Game.overTitle || DEFAULT_CRASH_TITLE, Game.overBody || DEFAULT_CRASH_BODY, "crashed");
           }
         }
         scoreEl.textContent = Game.score;
         return;
       }
       overEventHandled = false;
-      hideOverlay();
+      ov.hide();
       if (Game.step) Game.step(ts);
       Game.draw();
       scoreEl.textContent = Game.score;
@@ -331,5 +350,5 @@
     requestAnimationFrame(loop);
   }
 
-  window.Shell = { beep, alertChime, doneChime, isRunning, watch, boot };
+  window.Shell = { beep, alertChime, doneChime, isRunning, watch, overlayController, boot };
 })();

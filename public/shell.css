@@ -43,6 +43,13 @@ canvas{
 .overlay.alert{background:rgba(255,92,92,.10); border:1px solid var(--alert)}
 .overlay.done{background:rgba(55,224,160,.08); border:1px solid var(--accent)}
 .overlay.idle{background:rgba(13,17,23,.65); border:1px solid var(--line)}
+/* Pages with no .stage(position:relative) wrapper (e.g. the dashboard picker)
+   need the overlay pinned to the viewport instead of an unpredictable
+   containing block, and square corners since there's no canvas beneath it. */
+.overlay.standalone{ position:fixed; border-radius:0; z-index:10; }
+/* A .ctl button embedded directly inside .overlay (rather than in a sibling
+   .controls row) shouldn't stretch/shrink along the overlay's flex axis. */
+.overlay .ctl{ flex:none; min-width:160px; }
 .pill{
   font-size:11px; text-transform:uppercase; letter-spacing:.1em;
   padding:4px 10px; border-radius:999px; border:1px solid var(--line); color:var(--dim);

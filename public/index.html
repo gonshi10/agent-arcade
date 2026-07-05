@@ -62,13 +62,6 @@
     width:100%; max-width:760px; color:var(--dim); font-size:11px;
     line-height:1.6; text-align:center;
   }
-
-  /* The picker has no .stage(position:relative) wrapper like game pages do,
-     so shell.css's .overlay(position:absolute) would anchor to the initial
-     containing block instead of a predictable box — pin it to the viewport
-     explicitly instead, and drop the game-page corner radius. */
-  #overlay{ position:fixed; border-radius:0; z-index:10; }
-  #overlay .ctl{ flex:none; min-width:160px; }
 </style>
 </head>
 <body>
@@ -79,7 +72,7 @@
       We'll freeze the action and pull you back the instant it needs you.</p>
   </header>
 
-  <div id="overlay" class="overlay">
+  <div id="overlay" class="overlay standalone">
     <span class="pill" id="ovpill">—</span>
     <h1 id="ovtitle">—</h1>
     <p id="ovbody">—</p>
@@ -133,27 +126,23 @@
 
     // No game/HUD on this page — just the alert half of the shell, so the
     // agent can still yank you back while you're deciding what to play.
-    var overlay = document.getElementById("overlay");
-    var ovpill = document.getElementById("ovpill");
-    var ovtitle = document.getElementById("ovtitle");
-    var ovbody = document.getElementById("ovbody");
+    var ov = Shell.overlayController({
+      overlay: document.getElementById("overlay"),
+      title: document.getElementById("ovtitle"),
+      body: document.getElementById("ovbody"),
+      pill: document.getElementById("ovpill"),
+    });
     document.getElementById("btnAck").addEventListener("click", function () {
-      overlay.className = "overlay";
+      ov.hide();
     });
     Shell.watch({
       onTransition: function (s) {
         if (s.agent === "waiting") {
-          overlay.className = "overlay show alert";
-          ovpill.textContent = "needs you";
-          ovtitle.textContent = "⚠  Agent needs you";
-          ovbody.textContent = (s.reason || "Permission or input required.") + "  ·  Pick a game, or dismiss.";
+          ov.set("alert", "⚠  Agent needs you", (s.reason || "Permission or input required.") + "  ·  Pick a game, or dismiss.", "needs you");
         } else if (s.agent === "done") {
-          overlay.className = "overlay show done";
-          ovpill.textContent = "finished";
-          ovtitle.textContent = "✓  Agent finished";
-          ovbody.textContent = "Turn complete. Streak: " + s.elapsed.toFixed(1) + "s · " + s.tools + " tools.";
+          ov.set("done", "✓  Agent finished", "Turn complete. Streak: " + s.elapsed.toFixed(1) + "s · " + s.tools + " tools.", "finished");
         } else {
-          overlay.className = "overlay";
+          ov.hide();
         }
       },
     });
