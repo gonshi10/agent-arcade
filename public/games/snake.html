@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Snake — Agent Arcade</title>
+<link rel="stylesheet" href="../shell.css">
+</head>
+<body>
+  <div class="hud">
+    <div>
+      <div class="label">Agent</div>
+      <div class="big"><span id="dot" class="dot"></span><span id="status">connecting…</span></div>
+    </div>
+    <div style="text-align:center">
+      <div class="label">Autonomous streak</div>
+      <div class="big" id="streak">0.0s</div>
+    </div>
+    <div style="text-align:right">
+      <div class="label">Score · Tools</div>
+      <div class="big"><span id="score">0</span> · <span id="tools">0</span></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="game" width="520" height="520"></canvas>
+    <div id="overlay" class="overlay">
+      <span class="pill" id="ovpill">paused</span>
+      <h1 id="ovtitle">—</h1>
+      <p id="ovbody">—</p>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button id="btnResume" class="ctl" type="button">⏸ Pause</button>
+    <button id="btnRestart" class="ctl" type="button">↻ Restart</button>
+  </div>
+
+  <div class="foot">
+    <div><span class="dot working"></span>agent working · <span class="dot waiting"></span>agent needs you / finished — the game auto-pauses so you can jump back.</div>
+    <div>Move with <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> or <kbd>WASD</kbd>. The game auto-starts and plays while you wait on the agent; it pauses when the agent needs you or finishes. <b>Pause</b>/<b>Resume</b> anytime, or <b>Restart</b> for a fresh round. Your streak grows while the agent runs without needing you. · <a href="/?pick=1" style="color:var(--dim)">⌂ Change game</a></div>
+  </div>
+
+<script src="../shell.js"></script>
+<script>
+"use strict";
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+const N = 20, CELL = cv.width / N;
+
+const Game = {
+  alive: true,
+  score: 0,
+
+  reset() {
+    this.snake = [{x:9,y:10},{x:8,y:10},{x:7,y:10}];
+    this.dir = {x:1,y:0}; this.nextDir = {x:1,y:0};
+    this.food = spawnFood(this.snake);
+    this.score = 0; this.alive = true;
+    this.tickMs = 140; this.lastTick = 0;
+  },
+
+  step(ts) {
+    if (ts - this.lastTick < this.tickMs) return;
+    this.lastTick = ts;
+
+    this.dir = this.nextDir;
+    const head = { x: (this.snake[0].x + this.dir.x + N) % N, y: (this.snake[0].y + this.dir.y + N) % N };
+    const willEat = head.x === this.food.x && head.y === this.food.y;
+    // the tail cell vacates this tick unless we're eating (and thus not popping it) —
+    // exclude it from the collision check or a normal tail-chasing move reads as a crash.
+    const body = willEat ? this.snake : this.snake.slice(0, -1);
+    if (body.some(s => s.x === head.x && s.y === head.y)) { this.alive = false; return; }
+    this.snake.unshift(head);
+    if (willEat) {
+      this.score += 10;
+      this.food = spawnFood(this.snake);
+      this.tickMs = Math.max(70, this.tickMs - 3); // speeds up as you eat
+      Shell.beep(440, 0.05, "square");
+    } else {
+      this.snake.pop();
+    }
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.fillStyle = "#ffb454";
+    roundCell(this.food.x, this.food.y);
+    for (let i = 0; i < this.snake.length; i++) {
+      ctx.fillStyle = i === 0 ? "#37e0a0" : "#1f6f55";
+      roundCell(this.snake[i].x, this.snake[i].y);
+    }
+  },
+
+  input(e) {
+    const k = KEY[e.key];
+    if (!k) return;
+    e.preventDefault();
+    const [x, y] = k;
+    if (x === -this.dir.x && y === -this.dir.y) return; // no 180s
+    this.nextDir = {x, y};
+  },
+};
+
+function spawnFood(snake) {
+  while (true) {
+    const f = { x: (Math.random() * N) | 0, y: (Math.random() * N) | 0 };
+    if (!snake.some(s => s.x === f.x && s.y === f.y)) return f;
+  }
+}
+function roundCell(x, y) {
+  const pad = 2, r = 4, px = x * CELL + pad, py = y * CELL + pad, s = CELL - pad * 2;
+  ctx.beginPath();
+  ctx.roundRect(px, py, s, s, r);
+  ctx.fill();
+}
+const KEY = {
+  ArrowUp:[0,-1], ArrowDown:[0,1], ArrowLeft:[-1,0], ArrowRight:[1,0],
+  w:[0,-1], s:[0,1], a:[-1,0], d:[1,0],
+};
+
+Shell.boot(Game);
+</script>
+</body>
+</html>

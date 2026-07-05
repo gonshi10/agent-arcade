@@ -1,295 +1,122 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Arcade</title>
+<link rel="stylesheet" href="shell.css">
+<script>
+  // Returning-user shortcut: if we already know which game you play and the
+  // URL isn't explicitly asking for the picker (?pick=1), skip straight to it.
+  (function () {
+    try {
+      var qs = window.location.search || "";
+      var KNOWN = ["snake", "dino", "breakout", "pong", "2048"];
+      if (qs.indexOf("pick") === -1) {
+        var last = window.localStorage.getItem("agent-arcade:lastGame");
+        if (last && KNOWN.indexOf(last) !== -1) {
+          window.location.replace("/games/" + last + ".html");
+        }
+      }
+    } catch (e) {
+      /* localStorage unavailable — fall through to the picker */
+    }
+  })();
+</script>
 <style>
-  :root{
-    --bg:#0a0c10; --panel:#11151c; --line:#1d242e;
-    --ink:#e6edf3; --dim:#7d8896; --accent:#37e0a0; --warn:#ffb454; --alert:#ff5c5c;
-    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  /* Page-scoped layout for the picker grid only — colors/fonts come from shell.css tokens. */
+  body{ justify-content:flex-start; padding-top:56px; padding-bottom:56px; }
+
+  .top{ width:100%; max-width:760px; text-align:center; }
+  .top h1{
+    margin:0 0 10px; font-size:26px; letter-spacing:.06em; font-weight:600;
   }
-  *{box-sizing:border-box}
-  html,body{margin:0;height:100%}
-  body{
-    background:var(--bg); color:var(--ink); font-family:var(--mono);
-    display:flex; align-items:center; justify-content:center; gap:24px;
-    flex-direction:column; min-height:100vh; padding:24px;
+  .top h1 .dot{
+    display:inline-block; width:10px; height:10px; border-radius:50%;
+    background:var(--accent); box-shadow:0 0 10px var(--accent); margin-right:10px;
+    vertical-align:middle;
   }
-  .hud{
-    width:520px; max-width:92vw; display:flex; justify-content:space-between;
-    align-items:flex-end; font-size:12px; letter-spacing:.06em;
+  .top p{ margin:0; color:var(--dim); font-size:13px; line-height:1.6; }
+
+  .grid{
+    width:100%; max-width:760px; display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:16px;
   }
-  .hud .label{color:var(--dim); text-transform:uppercase}
-  .hud .big{font-size:22px}
-  #status{font-weight:600}
-  .stage{position:relative; width:520px; max-width:92vw; aspect-ratio:1/1}
-  canvas{
-    width:100%; height:100%; background:var(--panel);
-    border:1px solid var(--line); border-radius:14px; display:block;
+
+  .card{
+    display:flex; flex-direction:column; align-items:center; gap:8px;
+    width:100%; font-family:var(--mono); text-align:center;
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:24px 16px; cursor:pointer; color:var(--ink);
+    transition:border-color .12s, transform .12s, box-shadow .12s;
   }
-  .overlay{
-    position:absolute; inset:0; display:none; flex-direction:column;
-    align-items:center; justify-content:center; text-align:center; gap:14px;
-    border-radius:14px; backdrop-filter:blur(2px); padding:24px;
+  .card:hover, .card:focus-visible{
+    border-color:var(--accent); transform:translateY(-3px);
+    box-shadow:0 8px 24px rgba(55,224,160,.12); outline:none;
   }
-  .overlay.show{display:flex}
-  .overlay h1{margin:0; font-size:30px; letter-spacing:.04em}
-  .overlay p{margin:0; color:var(--dim); max-width:80%}
-  .overlay.alert{background:rgba(255,92,92,.10); border:1px solid var(--alert)}
-  .overlay.done{background:rgba(55,224,160,.08); border:1px solid var(--accent)}
-  .overlay.idle{background:rgba(13,17,23,.65); border:1px solid var(--line)}
-  .pill{
-    font-size:11px; text-transform:uppercase; letter-spacing:.1em;
-    padding:4px 10px; border-radius:999px; border:1px solid var(--line); color:var(--dim);
+  .card .icon{ font-size:38px; line-height:1; }
+  .card .name{ font-size:14px; letter-spacing:.04em; font-weight:600; }
+  .card .blurb{ margin:0; color:var(--dim); font-size:11.5px; line-height:1.5; }
+
+  .foot{
+    width:100%; max-width:760px; color:var(--dim); font-size:11px;
+    line-height:1.6; text-align:center;
   }
-  .controls{
-    width:520px; max-width:92vw; display:flex; gap:10px; justify-content:center;
-  }
-  .ctl{
-    flex:1; font-family:var(--mono); font-size:12px; letter-spacing:.04em;
-    padding:9px 12px; border-radius:10px; cursor:pointer;
-    background:var(--panel); border:1px solid var(--line); color:var(--dim);
-    transition:border-color .12s, color .12s, background .12s;
-  }
-  .ctl:hover{color:var(--ink)}
-  .ctl.active{border-color:var(--accent); color:var(--accent); background:rgba(55,224,160,.08)}
-  .foot{width:520px; max-width:92vw; color:var(--dim); font-size:11px; line-height:1.6}
-  kbd{background:#000; border:1px solid var(--line); border-radius:4px; padding:1px 5px; color:var(--ink)}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-right:6px;vertical-align:middle}
-  .dot.working{background:var(--accent);box-shadow:0 0 10px var(--accent)}
-  .dot.waiting{background:var(--alert);box-shadow:0 0 10px var(--alert)}
-  .dot.done{background:var(--accent)}
 </style>
 </head>
 <body>
-  <div class="hud">
-    <div>
-      <div class="label">Agent</div>
-      <div class="big"><span id="dot" class="dot"></span><span id="status">connecting…</span></div>
-    </div>
-    <div style="text-align:center">
-      <div class="label">Autonomous streak</div>
-      <div class="big" id="streak">0.0s</div>
-    </div>
-    <div style="text-align:right">
-      <div class="label">Score · Tools</div>
-      <div class="big"><span id="score">0</span> · <span id="tools">0</span></div>
-    </div>
-  </div>
 
-  <div class="stage">
-    <canvas id="game" width="520" height="520"></canvas>
-    <div id="overlay" class="overlay">
-      <span class="pill" id="ovpill">paused</span>
-      <h1 id="ovtitle">—</h1>
-      <p id="ovbody">—</p>
-    </div>
-  </div>
+  <header class="top">
+    <h1><span class="dot"></span>Agent Arcade</h1>
+    <p>Play a game while your Claude Code agent works — pick one below.<br>
+      We'll freeze the action and pull you back the instant it needs you.</p>
+  </header>
 
-  <div class="controls" id="controls">
-    <button id="btnResume" class="ctl" type="button">⏸ Pause</button>
-    <button id="btnRestart" class="ctl" type="button">↻ Restart</button>
-  </div>
+  <main class="grid" id="grid">
+    <button type="button" class="card" data-id="snake">
+      <span class="icon">🐍</span>
+      <span class="name">Snake</span>
+      <p class="blurb">Classic wraparound snake. Eat, grow, don't hit yourself.</p>
+    </button>
+    <button type="button" class="card" data-id="dino">
+      <span class="icon">🦖</span>
+      <span class="name">Dino Runner</span>
+      <p class="blurb">Endless side-scroller. Jump and duck the obstacles.</p>
+    </button>
+    <button type="button" class="card" data-id="breakout">
+      <span class="icon">🧱</span>
+      <span class="name">Breakout</span>
+      <p class="blurb">Paddle and ball. Clear every brick.</p>
+    </button>
+    <button type="button" class="card" data-id="pong">
+      <span class="icon">🏓</span>
+      <span class="name">Pong</span>
+      <p class="blurb">Defend the wall. Survive an endless rally.</p>
+    </button>
+    <button type="button" class="card" data-id="2048">
+      <span class="icon">🔢</span>
+      <span class="name">2048</span>
+      <p class="blurb">Slide and merge tiles to chase a high score.</p>
+    </button>
+  </main>
 
-  <div class="foot">
-    <div><span class="dot working"></span>agent working · <span class="dot waiting"></span>agent needs you / finished — the game auto-pauses so you can jump back.</div>
-    <div>Move with <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> or <kbd>WASD</kbd>. The game auto-starts and plays while you wait on the agent; it pauses when the agent needs you or finishes. <b>Pause</b>/<b>Resume</b> anytime, or <b>Restart</b> for a fresh round. Your streak grows while the agent runs without needing you.</div>
-  </div>
+  <p class="foot">
+    Your pick is remembered for next time — every game has a
+    <kbd>⌂ Change game</kbd> link to come back here.
+  </p>
 
 <script>
-// ---------- audio: short alert beep, no asset needed ----------
-let actx;
-function beep(freq=660, dur=0.14, type="square", when=0){
-  try{
-    actx = actx || new (window.AudioContext||window.webkitAudioContext)();
-    const o=actx.createOscillator(), g=actx.createGain();
-    o.type=type; o.frequency.value=freq; o.connect(g); g.connect(actx.destination);
-    const t=actx.currentTime+when;
-    g.gain.setValueAtTime(0.0001,t);
-    g.gain.exponentialRampToValueAtTime(0.25,t+0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
-    o.start(t); o.stop(t+dur);
-  }catch(e){}
-}
-function alertChime(){ beep(880,0.12,"square",0); beep(1175,0.12,"square",0.13); beep(1568,0.18,"square",0.27); }
-function doneChime(){ beep(523,0.12,"sine",0); beep(784,0.16,"sine",0.12); }
-
-// ---------- game: snake ----------
-const cv=document.getElementById("game"), ctx=cv.getContext("2d");
-const N=20, CELL=cv.width/N;
-let snake, dir, nextDir, food, score, alive, tickMs, lastTick;
-
-function reset(){
-  snake=[{x:9,y:10},{x:8,y:10},{x:7,y:10}];
-  dir={x:1,y:0}; nextDir={x:1,y:0};
-  food=spawnFood(); score=0; alive=true; tickMs=140; lastTick=0;
-}
-function spawnFood(){
-  while(true){
-    const f={x:(Math.random()*N)|0, y:(Math.random()*N)|0};
-    if(!snake.some(s=>s.x===f.x&&s.y===f.y)) return f;
-  }
-}
-function step(){
-  dir=nextDir;
-  const head={x:(snake[0].x+dir.x+N)%N, y:(snake[0].y+dir.y+N)%N};
-  if(snake.some(s=>s.x===head.x&&s.y===head.y)){ alive=false; return; }
-  snake.unshift(head);
-  if(head.x===food.x&&head.y===food.y){
-    score+=10; food=spawnFood();
-    tickMs=Math.max(70,tickMs-3); // speeds up as you eat
-    beep(440,0.05,"square");
-  }else{
-    snake.pop();
-  }
-  document.getElementById("score").textContent=score;
-}
-function draw(){
-  ctx.clearRect(0,0,cv.width,cv.height);
-  // food = a "token"
-  ctx.fillStyle="#ffb454";
-  roundCell(food.x,food.y);
-  // snake
-  for(let i=0;i<snake.length;i++){
-    ctx.fillStyle = i===0 ? "#37e0a0" : "#1f6f55";
-    roundCell(snake[i].x,snake[i].y);
-  }
-}
-function roundCell(x,y){
-  const pad=2, r=4, px=x*CELL+pad, py=y*CELL+pad, s=CELL-pad*2;
-  ctx.beginPath();
-  ctx.roundRect(px,py,s,s,r);
-  ctx.fill();
-}
-
-// ---------- input ----------
-const KEY={ArrowUp:[0,-1],ArrowDown:[0,1],ArrowLeft:[-1,0],ArrowRight:[1,0],
-           w:[0,-1],s:[0,1],a:[-1,0],d:[1,0]};
-addEventListener("keydown",e=>{
-  const k=KEY[e.key];
-  if(!k) return;
-  e.preventDefault();
-  if(actx&&actx.state==="suspended") actx.resume();
-  const [x,y]=k;
-  if(x===-dir.x&&y===-dir.y) return; // no 180s
-  nextDir={x,y};
-});
-
-// ---------- state machine driven by the server ----------
-let agent="idle", lastSeq=-1;
-// The game runs only while `running` (and the snake is alive). It starts true so the
-// game auto-plays the moment the window opens; agent waiting/done/idle auto-pause it,
-// and the player toggles it with the Pause/Resume button (Restart starts a fresh round).
-// Always change it via setRunning() so the toggle button label stays in sync.
-let running=true;
-const overlay=document.getElementById("overlay");
-
-function setOverlay(kind,title,body,pill){
-  overlay.className="overlay show "+kind;
-  document.getElementById("ovtitle").textContent=title;
-  document.getElementById("ovbody").textContent=body;
-  document.getElementById("ovpill").textContent=pill;
-}
-function hideOverlay(){ overlay.className="overlay"; }
-
-function applyState(s){
-  document.getElementById("streak").textContent=(agent==="working"? s.elapsed : 0).toFixed(1)+"s";
-  document.getElementById("tools").textContent=s.tools;
-  const dot=document.getElementById("dot"), st=document.getElementById("status");
-  dot.className="dot "+s.agent;
-
-  if(s.seq===lastSeq && s.agent===agent) return; // nothing new structurally
-  lastSeq=s.seq;
-  const prev=agent; agent=s.agent;
-
-  // Agent transitions never auto-start the game; waiting/done/idle auto-PAUSE it to pull
-  // attention. Only the player's Resume/Restart click sets `running` back to true.
-  if(agent==="working"){
-    st.textContent = running ? "working — play" : "working — paused";
-    if(!running) showPaused();
-    // if running, the loop keeps drawing and hides the overlay
-  }else if(agent==="waiting"){
-    setRunning(false);
-    st.textContent="NEEDS YOU";
-    setOverlay("alert","⚠  Agent needs you",(s.reason||"Permission or input required.")+"  ·  Resume or Restart when you're ready.","needs you");
-    if(prev!=="waiting"){ alertChime(); flashTitle("🔔 AGENT NEEDS YOU"); }
-  }else if(agent==="done"){
-    setRunning(false);
-    st.textContent="done";
-    setOverlay("done","✓  Agent finished","Turn complete. Streak: "+s.elapsed.toFixed(1)+"s · "+s.tools+" tools.  ·  Resume or Restart to keep playing.","finished");
-    if(prev!=="done"){ doneChime(); flashTitle("✓ AGENT DONE"); }
-  }else{ // idle
-    setRunning(false);
-    st.textContent="idle";
-    setOverlay("idle","Waiting for the agent","Send a prompt in Claude Code — or Resume / Restart to play now.","idle");
-  }
-}
-
-// pull attention even when this tab/monitor isn't focused
-let titleTimer=null, baseTitle="Agent Arcade";
-function flashTitle(msg){
-  clearInterval(titleTimer); let on=true;
-  titleTimer=setInterval(()=>{ document.title=on?msg:baseTitle; on=!on; },700);
-  if(document.hidden) tryNotify(msg);
-}
-function clearFlash(){ clearInterval(titleTimer); document.title=baseTitle; }
-function tryNotify(msg){
-  if(!("Notification" in window)) return;
-  if(Notification.permission==="granted") new Notification(msg);
-  else if(Notification.permission!=="denied") Notification.requestPermission();
-}
-addEventListener("focus",clearFlash);
-addEventListener("click",()=>{ if(!actx) beep(0,0.001); if(Notification?.permission==="default") Notification.requestPermission(); });
-
-// ---------- pause / resume / restart controls ----------
-const btnResume=document.getElementById("btnResume"), btnRestart=document.getElementById("btnRestart");
-// Single source of truth for `running`: keeps the toggle button (Pause⇄Resume) in sync.
-function setRunning(v){
-  running=v;
-  btnResume.textContent = v ? "⏸ Pause" : "▶ Resume";
-  btnResume.classList.toggle("active", v); // accent while the game is live
-}
-function showPaused(){
-  setOverlay("idle","⏸  Paused","Game paused. Resume to keep playing, or Restart for a new round.","paused");
-}
-function pause(){ setRunning(false); showPaused(); }
-function play(restart){
-  if(restart || !alive) reset(); // Restart, or reviving a crashed game → fresh round
-  setRunning(true);
-  hideOverlay();
-  if(actx && actx.state==="suspended") actx.resume(); // a click is a user gesture
-}
-btnResume.addEventListener("click",()=>{ running ? pause() : play(false); btnResume.blur(); });
-btnRestart.addEventListener("click",()=>{ play(true); btnRestart.blur(); });
-
-// ---------- loops ----------
-async function poll(){
-  try{
-    const r=await fetch("/state?watch=1",{cache:"no-store"});
-    applyState(await r.json());
-  }catch(e){
-    document.getElementById("status").textContent="server offline";
-  }
-}
-setInterval(poll,200); poll();
-// Tell the server the moment this tab goes away, so the next prompt reopens the game.
-addEventListener("pagehide",()=>navigator.sendBeacon("/event/closed"));
-
-function loop(ts){
-  requestAnimationFrame(loop);
-  if(!running){ return; }                 // paused — overlay already shown by applyState
-  if(!alive){                             // you crashed — stop and wait for Resume/Restart
-    if(running) setRunning(false);
-    setOverlay("alert","💥 Crashed","Resume or Restart to play again.","crashed");
-    return;
-  }
-  hideOverlay();
-  if(ts-lastTick>=tickMs){ lastTick=ts; step(); }
-  draw();
-}
-reset(); setRunning(true); requestAnimationFrame(loop);
+  (function () {
+    var grid = document.getElementById("grid");
+    grid.addEventListener("click", function (e) {
+      var card = e.target.closest(".card");
+      if (!card) return;
+      var id = card.getAttribute("data-id");
+      try { window.localStorage.setItem("agent-arcade:lastGame", id); } catch (e) {}
+      window.location.href = "/games/" + id + ".html";
+    });
+  })();
 </script>
+
 </body>
 </html>

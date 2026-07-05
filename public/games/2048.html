@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>2048 — Agent Arcade</title>
+<link rel="stylesheet" href="../shell.css">
+</head>
+<body>
+  <div class="hud">
+    <div>
+      <div class="label">Agent</div>
+      <div class="big"><span id="dot" class="dot"></span><span id="status">connecting…</span></div>
+    </div>
+    <div style="text-align:center">
+      <div class="label">Autonomous streak</div>
+      <div class="big" id="streak">0.0s</div>
+    </div>
+    <div style="text-align:right">
+      <div class="label">Score · Tools</div>
+      <div class="big"><span id="score">0</span> · <span id="tools">0</span></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="game" width="480" height="480"></canvas>
+    <div id="overlay" class="overlay">
+      <span class="pill" id="ovpill">paused</span>
+      <h1 id="ovtitle">—</h1>
+      <p id="ovbody">—</p>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button id="btnResume" class="ctl" type="button">⏸ Pause</button>
+    <button id="btnRestart" class="ctl" type="button">↻ Restart</button>
+  </div>
+
+  <div class="foot">
+    <div><span class="dot working"></span>agent working · <span class="dot waiting"></span>agent needs you / finished — the game auto-pauses so you can jump back.</div>
+    <div>Slide tiles with <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> or <kbd>WASD</kbd> — matching tiles merge into their sum. Reach <b>2048</b> to win. The game auto-starts and plays while you wait on the agent; it pauses when the agent needs you or finishes. <b>Pause</b>/<b>Resume</b> anytime, or <b>Restart</b> for a fresh grid. <a href="/?pick=1" style="color:var(--dim)">⌂ Change game</a></div>
+  </div>
+
+<script src="../shell.js"></script>
+<script>
+"use strict";
+
+// ---------- board setup ----------
+const N = 4;
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height;
+const PAD = 14, GAP = 12;
+const CELL = (W - PAD * 2 - GAP * (N - 1)) / N;
+
+// ---------- palette tokens (read from shell.css's :root, not reinvented) ----------
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+const COLOR = {
+  bg: cssVar("--bg", "#0a0c10"),
+  panel: cssVar("--panel", "#11151c"),
+  line: cssVar("--line", "#1d242e"),
+  ink: cssVar("--ink", "#e6edf3"),
+  dim: cssVar("--dim", "#7d8896"),
+  accent: cssVar("--accent", "#37e0a0"),
+  warn: cssVar("--warn", "#ffb454"),
+  alert: cssVar("--alert", "#ff5c5c"),
+};
+const FONT = cssVar("--mono", "monospace");
+
+// Tile color scale: interpolated purely between the shared tokens (line → dim →
+// accent → warn → alert as value climbs), so every hue on the board traces back
+// to the palette instead of inventing new colors.
+function hexToRgb(hex) {
+  const h = hex.replace("#", "");
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+function rgbToHex(rgb) {
+  return "#" + rgb.map((v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, "0")).join("");
+}
+function lerp(a, b, f) { return a + (b - a) * f; }
+function mixHex(hexA, hexB, f) {
+  const a = hexToRgb(hexA), b = hexToRgb(hexB);
+  return rgbToHex([lerp(a[0], b[0], f), lerp(a[1], b[1], f), lerp(a[2], b[2], f)]);
+}
+const COLOR_ANCHORS = [
+  // value 2 is mixed lighter than the raw empty-cell fill (COLOR.line) so a
+  // freshly spawned tile's rounded rect is still visible against the grid.
+  { t: 1, hex: mixHex(COLOR.line, COLOR.dim, 0.35) }, // value 2
+  { t: 3, hex: COLOR.dim },    // value 8
+  { t: 6, hex: COLOR.accent }, // value 64
+  { t: 8, hex: COLOR.warn },   // value 256
+  { t: 11, hex: COLOR.alert }, // value 2048
+];
+function colorForValue(v) {
+  const t = Math.log2(v);
+  if (t <= COLOR_ANCHORS[0].t) return COLOR_ANCHORS[0].hex;
+  for (let i = 0; i < COLOR_ANCHORS.length - 1; i++) {
+    const a = COLOR_ANCHORS[i], b = COLOR_ANCHORS[i + 1];
+    if (t <= b.t) {
+      const f = (t - a.t) / (b.t - a.t);
+      const ra = hexToRgb(a.hex), rb = hexToRgb(b.hex);
+      return rgbToHex([lerp(ra[0], rb[0], f), lerp(ra[1], rb[1], f), lerp(ra[2], rb[2], f)]);
+    }
+  }
+  return COLOR_ANCHORS[COLOR_ANCHORS.length - 1].hex; // clamp beyond 2048
+}
+function textColorForValue(v) {
+  return Math.log2(v) >= 6 ? COLOR.bg : COLOR.ink; // dark text once the tile itself is bright
+}
+
+// ---------- grid state ----------
+let grid; // 4x4, 0 = empty
+
+function emptyCells() {
+  const out = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (grid[r][c] === 0) out.push([r, c]);
+  return out;
+}
+function spawnRandomTile() {
+  const cells = emptyCells();
+  if (!cells.length) return;
+  const [r, c] = cells[(Math.random() * cells.length) | 0];
+  grid[r][c] = Math.random() < 0.9 ? 2 : 4;
+}
+
+function slideMergeLine(values) {
+  const nz = values.filter((v) => v !== 0);
+  const merged = [];
+  let gained = 0;
+  let i = 0;
+  while (i < nz.length) {
+    if (i + 1 < nz.length && nz[i] === nz[i + 1]) {
+      const v = nz[i] * 2;
+      merged.push(v);
+      gained += v;
+      i += 2; // skip both — a merged tile can't merge again this move
+    } else {
+      merged.push(nz[i]);
+      i += 1;
+    }
+  }
+  while (merged.length < N) merged.push(0);
+  return { merged, gained };
+}
+
+function getRow(r) { return grid[r].slice(); }
+function setRow(r, arr) { grid[r] = arr; }
+function getCol(c) { const out = []; for (let r = 0; r < N; r++) out.push(grid[r][c]); return out; }
+function setCol(c, arr) { for (let r = 0; r < N; r++) grid[r][c] = arr[r]; }
+
+function move(dir) {
+  const before = JSON.stringify(grid);
+  let gained = 0;
+  if (dir === "left" || dir === "right") {
+    for (let r = 0; r < N; r++) {
+      let line = getRow(r);
+      if (dir === "right") line = line.reverse();
+      const res = slideMergeLine(line);
+      gained += res.gained;
+      setRow(r, dir === "right" ? res.merged.reverse() : res.merged);
+    }
+  } else {
+    for (let c = 0; c < N; c++) {
+      let line = getCol(c);
+      if (dir === "down") line = line.reverse();
+      const res = slideMergeLine(line);
+      gained += res.gained;
+      setCol(c, dir === "down" ? res.merged.reverse() : res.merged);
+    }
+  }
+  const changed = JSON.stringify(grid) !== before;
+  if (!changed) return; // no-op keypress: no spawn, no score
+  Game.score += gained;
+  if (gained > 0) Shell.beep(420 + Math.min(gained, 1600) * 0.25, 0.06, "square");
+  spawnRandomTile();
+  checkWin();
+  checkLoss();
+  // Turn-based: draw immediately so the tile that just won/lost the round is
+  // actually visible under the overlay (shell's rAF loop stops calling draw()
+  // the instant Game.alive flips false, so we can't rely on the next frame).
+  drawGrid();
+}
+
+function checkWin() {
+  if (Game.won) return;
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (grid[r][c] === 2048) {
+        Game.won = true;
+        Game.alive = false;
+        Game.overTitle = "🎉 2048!";
+        Game.overBody = "You built the 2048 tile! Score: " + Game.score + ".";
+        return;
+      }
+    }
+  }
+}
+function checkLoss() {
+  if (!Game.alive) return; // already ended (e.g. just won)
+  if (emptyCells().length) return;
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const v = grid[r][c];
+      if (c + 1 < N && grid[r][c + 1] === v) return;
+      if (r + 1 < N && grid[r + 1][c] === v) return;
+    }
+  }
+  Game.alive = false;
+  Game.overTitle = "🔒 No more moves";
+  Game.overBody = "The grid is full and nothing matches. Score: " + Game.score + ".";
+}
+
+// ---------- rendering ----------
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function cellPos(r, c) { return [PAD + c * (CELL + GAP), PAD + r * (CELL + GAP)]; }
+
+function drawGrid() {
+  ctx.clearRect(0, 0, W, H);
+  // empty slots
+  ctx.fillStyle = COLOR.line;
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const [x, y] = cellPos(r, c);
+      roundRect(x, y, CELL, CELL, 10);
+      ctx.fill();
+    }
+  }
+  // tiles
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const v = grid[r][c];
+      if (!v) continue;
+      const [x, y] = cellPos(r, c);
+      roundRect(x, y, CELL, CELL, 10);
+      ctx.fillStyle = colorForValue(v);
+      ctx.fill();
+      const digits = String(v).length;
+      ctx.font = "700 " + (digits >= 4 ? CELL * 0.32 : digits === 3 ? CELL * 0.38 : CELL * 0.46) + "px " + FONT;
+      ctx.fillStyle = textColorForValue(v);
+      ctx.fillText(String(v), x + CELL / 2, y + CELL / 2 + 1);
+    }
+  }
+}
+
+// ---------- Game contract (see ../shell.js for the full API this hooks into) ----------
+const KEY_DIR = {
+  ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down",
+  a: "left", d: "right", w: "up", s: "down",
+  A: "left", D: "right", W: "up", S: "down",
+};
+
+const Game = {
+  score: 0,
+  alive: true,
+  won: false,
+  overTitle: undefined,
+  overBody: undefined,
+
+  reset() {
+    grid = Array.from({ length: N }, () => Array(N).fill(0));
+    this.score = 0;
+    this.alive = true;
+    this.won = false;
+    this.overTitle = undefined;
+    this.overBody = undefined;
+    spawnRandomTile();
+    spawnRandomTile();
+  },
+
+  input(e) {
+    const dir = KEY_DIR[e.key];
+    if (!dir) return;
+    e.preventDefault();
+    move(dir);
+  },
+
+  draw() { drawGrid(); },
+};
+
+Shell.boot(Game);
+</script>
+</body>
+</html>

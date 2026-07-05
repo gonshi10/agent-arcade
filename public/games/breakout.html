@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Breakout — Agent Arcade</title>
+<link rel="stylesheet" href="../shell.css">
+</head>
+<body>
+  <div class="hud">
+    <div>
+      <div class="label">Agent</div>
+      <div class="big"><span id="dot" class="dot"></span><span id="status">connecting…</span></div>
+    </div>
+    <div style="text-align:center">
+      <div class="label">Autonomous streak</div>
+      <div class="big" id="streak">0.0s</div>
+    </div>
+    <div style="text-align:right">
+      <div class="label">Score · Tools</div>
+      <div class="big"><span id="score">0</span> · <span id="tools">0</span></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="game" width="520" height="520"></canvas>
+    <div id="overlay" class="overlay">
+      <span class="pill" id="ovpill">paused</span>
+      <h1 id="ovtitle">—</h1>
+      <p id="ovbody">—</p>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button id="btnResume" class="ctl" type="button">⏸ Pause</button>
+    <button id="btnRestart" class="ctl" type="button">↻ Restart</button>
+  </div>
+
+  <div class="foot">
+    <div><span class="dot working"></span>agent working · <span class="dot waiting"></span>agent needs you / finished — the game auto-pauses so you can jump back.</div>
+    <div>Move the paddle with <kbd>←</kbd><kbd>→</kbd> or by moving the mouse over the board. Break every brick to win; let the ball fall past the paddle and it's over. The game auto-starts and pauses whenever the agent needs you or finishes. <b>Pause</b>/<b>Resume</b> anytime, or <b>Restart</b> for a fresh round.</div>
+    <div><a href="/?pick=1" style="color:var(--dim)">⌂ Change game</a></div>
+  </div>
+
+<script src="../shell.js"></script>
+<script>
+"use strict";
+
+// ---------- board setup ----------
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height;
+
+// Pull the shared palette from shell.css rather than re-declaring hex values.
+const css = getComputedStyle(document.documentElement);
+const COLOR = {
+  accent: css.getPropertyValue("--accent").trim() || "#37e0a0",
+  warn: css.getPropertyValue("--warn").trim() || "#ffb454",
+  alert: css.getPropertyValue("--alert").trim() || "#ff5c5c",
+  ink: css.getPropertyValue("--ink").trim() || "#e6edf3",
+  dim: css.getPropertyValue("--dim").trim() || "#7d8896",
+};
+function hexToRgba(hex, alpha) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16), g = parseInt(h.substring(2, 4), 16), b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+  ctx.fill();
+}
+
+// ---------- tunables ----------
+const PADDLE_W = 92, PADDLE_H = 12, PADDLE_Y = H - 40, PADDLE_SPEED = 480;
+const BALL_R = 7, BALL_SPEED0 = 300, BALL_SPEED_MAX = 560, SPEEDUP = 1.012;
+const ROWS = 6, COLS = 8, BRICK_H = 18, BRICK_GAP = 6, MARGIN_X = 16, MARGIN_TOP = 56;
+const BRICK_W = (W - MARGIN_X * 2 - BRICK_GAP * (COLS - 1)) / COLS;
+
+// ---------- mutable game state ----------
+let paddle, ball, bricks, remaining, leftHeld, rightHeld, lastTs;
+
+function buildBricks() {
+  const arr = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      arr.push({
+        x: MARGIN_X + c * (BRICK_W + BRICK_GAP),
+        y: MARGIN_TOP + r * (BRICK_H + BRICK_GAP),
+        w: BRICK_W, h: BRICK_H,
+        alive: true,
+        alpha: 1 - r * 0.09,
+      });
+    }
+  }
+  return arr;
+}
+
+function serveBall() {
+  const angle = (Math.random() * 0.7 - 0.35); // radians off straight-up
+  return {
+    x: W / 2, y: PADDLE_Y - BALL_R - 14,
+    vx: BALL_SPEED0 * Math.sin(angle),
+    vy: -BALL_SPEED0 * Math.cos(angle),
+  };
+}
+
+function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+// ---------- Game object: the shared shell's only contract with this page ----------
+const Game = {
+  score: 0,
+  alive: true,
+  won: false,
+  overTitle: undefined,
+  overBody: undefined,
+
+  reset() {
+    paddle = { x: (W - PADDLE_W) / 2 };
+    ball = serveBall();
+    bricks = buildBricks();
+    remaining = bricks.length;
+    leftHeld = false; rightHeld = false;
+    lastTs = null;
+    Game.score = 0;
+    Game.alive = true;
+    Game.won = false;
+    Game.overTitle = undefined;
+    Game.overBody = undefined;
+  },
+
+  step(ts) {
+    if (lastTs == null) lastTs = ts;
+    let dt = (ts - lastTs) / 1000;
+    lastTs = ts;
+    if (dt > 0.05) dt = 0.05; // clamp huge jumps (e.g. tab was backgrounded)
+
+    // paddle
+    if (leftHeld) paddle.x -= PADDLE_SPEED * dt;
+    if (rightHeld) paddle.x += PADDLE_SPEED * dt;
+    paddle.x = clamp(paddle.x, 0, W - PADDLE_W);
+
+    // ball
+    ball.x += ball.vx * dt;
+    ball.y += ball.vy * dt;
+
+    // walls
+    if (ball.x - BALL_R < 0) { ball.x = BALL_R; ball.vx *= -1; }
+    else if (ball.x + BALL_R > W) { ball.x = W - BALL_R; ball.vx *= -1; }
+    if (ball.y - BALL_R < 0) { ball.y = BALL_R; ball.vy *= -1; }
+
+    // paddle
+    if (ball.vy > 0 &&
+        ball.y + BALL_R >= PADDLE_Y && ball.y + BALL_R <= PADDLE_Y + PADDLE_H + 8 &&
+        ball.x + BALL_R >= paddle.x && ball.x - BALL_R <= paddle.x + PADDLE_W) {
+      ball.y = PADDLE_Y - BALL_R;
+      const hit = clamp((ball.x - (paddle.x + PADDLE_W / 2)) / (PADDLE_W / 2), -1, 1);
+      const speed = Math.min(BALL_SPEED_MAX, Math.hypot(ball.vx, ball.vy));
+      const angle = hit * 1.0; // up to ~57° off vertical at the paddle edges
+      ball.vx = speed * Math.sin(angle);
+      ball.vy = -Math.abs(speed * Math.cos(angle));
+      Shell.beep(220, 0.05, "square");
+    }
+
+    // bricks — at most one hit per frame keeps the bounce physics sane
+    for (const b of bricks) {
+      if (!b.alive) continue;
+      if (ball.x + BALL_R > b.x && ball.x - BALL_R < b.x + b.w &&
+          ball.y + BALL_R > b.y && ball.y - BALL_R < b.y + b.h) {
+        b.alive = false;
+        remaining--;
+        Game.score += 10;
+        const overlapX = Math.min(ball.x + BALL_R - b.x, b.x + b.w - (ball.x - BALL_R));
+        const overlapY = Math.min(ball.y + BALL_R - b.y, b.y + b.h - (ball.y - BALL_R));
+        if (overlapX < overlapY) ball.vx *= -1; else ball.vy *= -1;
+        const speed = Math.min(BALL_SPEED_MAX, Math.hypot(ball.vx, ball.vy) * SPEEDUP);
+        const norm = Math.hypot(ball.vx, ball.vy) || 1;
+        ball.vx = (ball.vx / norm) * speed;
+        ball.vy = (ball.vy / norm) * speed;
+        Shell.beep(660, 0.05, "square");
+        break;
+      }
+    }
+
+    if (remaining <= 0) {
+      Game.alive = false;
+      Game.won = true;
+      Game.overTitle = "🏆 Cleared!";
+      Game.overBody = "Every brick down · score " + Game.score + ".  Resume or Restart to play again.";
+      return;
+    }
+
+    // miss
+    if (ball.y - BALL_R > H) {
+      Game.alive = false;
+      Game.won = false;
+      Game.overTitle = "💥 Ball lost";
+      Game.overBody = "Score " + Game.score + " · " + (bricks.length - remaining) + "/" + bricks.length + " bricks broken.  Resume or Restart to try again.";
+    }
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+    for (const b of bricks) {
+      if (!b.alive) continue;
+      ctx.fillStyle = hexToRgba(COLOR.warn, b.alpha);
+      roundRect(b.x, b.y, b.w, b.h, 4);
+    }
+    ctx.fillStyle = COLOR.accent;
+    roundRect(paddle.x, PADDLE_Y, PADDLE_W, PADDLE_H, 6);
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI * 2);
+    ctx.fill();
+  },
+
+  input(e) {
+    if (e.key === "ArrowLeft") { leftHeld = true; e.preventDefault(); }
+    else if (e.key === "ArrowRight") { rightHeld = true; e.preventDefault(); }
+  },
+};
+
+// keyup isn't forwarded by the shared shell listener (it only wires keydown),
+// so track key-release ourselves to stop continuous paddle movement.
+addEventListener("keyup", (e) => {
+  if (e.key === "ArrowLeft") leftHeld = false;
+  else if (e.key === "ArrowRight") rightHeld = false;
+});
+
+// mouse control: an extra listener the game owns, gated on the shell's
+// running-state getter exactly like shell.js gates its own keydown listener.
+cv.addEventListener("mousemove", (e) => {
+  if (!Shell.isRunning()) return;
+  const rect = cv.getBoundingClientRect();
+  const scaleX = cv.width / rect.width;
+  const mx = (e.clientX - rect.left) * scaleX;
+  paddle.x = clamp(mx - PADDLE_W / 2, 0, W - PADDLE_W);
+});
+
+Shell.boot(Game);
+</script>
+</body>
+</html>
