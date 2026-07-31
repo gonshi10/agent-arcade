@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dino Runner — Agent Arcade</title>
+<link rel="stylesheet" href="../shell.css">
+<style>
+  /* Dino Runner is a wide, short side-scroller, not the shared 520x520 square
+     stage — override just the sizing on the shared chrome classes so the
+     HUD/stage/controls/foot line up with the wider canvas. Everything else
+     (colors, overlay, pill, ctl, dot, kbd) stays exactly as shell.css defines it. */
+  .hud, .stage, .controls, .foot { width: 720px; max-width: 96vw; }
+  .stage { aspect-ratio: 720 / 260; }
+</style>
+</head>
+<body>
+  <div class="hud">
+    <div>
+      <div class="label">Agent</div>
+      <div class="big"><span id="dot" class="dot"></span><span id="status">connecting…</span></div>
+    </div>
+    <div style="text-align:center">
+      <div class="label">Autonomous streak</div>
+      <div class="big" id="streak">0.0s</div>
+    </div>
+    <div style="text-align:right">
+      <div class="label">Score · Tools</div>
+      <div class="big"><span id="score">0</span> · <span id="tools">0</span></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="game" width="720" height="260"></canvas>
+    <div id="overlay" class="overlay">
+      <span class="pill" id="ovpill">paused</span>
+      <h1 id="ovtitle">—</h1>
+      <p id="ovbody">—</p>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button id="btnResume" class="ctl" type="button">⏸ Pause</button>
+    <button id="btnRestart" class="ctl" type="button">↻ Restart</button>
+  </div>
+
+  <div class="foot">
+    <div><span class="dot working"></span>agent working · <span class="dot waiting"></span>agent needs you / finished — the game auto-pauses so you can jump back.</div>
+    <div><kbd>Space</kbd>/<kbd>↑</kbd> jump over cacti, <kbd>↓</kbd> duck under low flyers. The ground scrolls faster the longer you last. The game auto-starts and plays while you wait on the agent; it pauses when the agent needs you or finishes. <b>Pause</b>/<b>Resume</b> anytime, or <b>Restart</b> for a fresh run. Your streak grows while the agent runs without needing you.</div>
+    <div><a href="/?pick=1" style="color:var(--dim)">⌂ Change game</a></div>
+  </div>
+
+<script src="../shell.js"></script>
+<script>
+"use strict";
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height;
+
+// Pull the shared palette from shell.css rather than re-declaring hex values.
+const css = getComputedStyle(document.documentElement);
+const COLOR = {
+  bg: css.getPropertyValue("--bg").trim() || "#0a0c10",
+  accent: css.getPropertyValue("--accent").trim() || "#37e0a0",
+  alert: css.getPropertyValue("--alert").trim() || "#ff5c5c",
+  line: css.getPropertyValue("--line").trim() || "#1d242e",
+  ink: css.getPropertyValue("--ink").trim() || "#e6edf3",
+  dim: css.getPropertyValue("--dim").trim() || "#7d8896",
+};
+
+// ---------- ground + player geometry ----------
+const GROUND_Y = 200;           // horizon line the character runs along
+const PLAYER_X = 90;            // fixed horizontal position (world scrolls, not the player)
+const STAND_W = 32, STAND_H = 46;
+const DUCK_W = 48, DUCK_H = 24; // ducking: wider + shorter hitbox, same ground contact point
+
+// A flying obstacle sits in the band that overlaps the standing hitbox but
+// clears the ducking hitbox, so ducking is the only way under it.
+const BIRD_W = 34, BIRD_H = 18;
+const BIRD_BOTTOM = GROUND_Y - DUCK_H - 4; // just above the duck hitbox's top edge
+
+// ---------- physics / difficulty tunables ----------
+const GRAVITY = 2600;      // px/s^2
+const JUMP_SPEED = 680;    // px/s, upward, at takeoff
+const BASE_SPEED = 300;    // px/s scroll speed at run start
+const ACCEL = 8;           // px/s scroll-speed gain per elapsed second
+const MAX_SPEED = 680;     // px/s scroll speed cap
+
+const CACTUS_KINDS = [
+  { w: 14, h: 28, arms: 0 },
+  { w: 20, h: 38, arms: 1 },
+  { w: 26, h: 48, arms: 2 },
+  { w: 38, h: 40, arms: 2 },
+];
+
+function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
+
+const Game = {
+  alive: true,
+  score: 0,
+  overTitle: undefined,
+  overBody: undefined,
+
+  reset() {
+    this.groundOffset = 0;   // how far the character's feet are above the ground line
+    this.vy = 0;
+    this.grounded = true;
+    this.ducking = false;
+
+    this.runTime = 0;
+    this.distance = 0;
+    this.speed = BASE_SPEED;
+
+    this.obstacles = [];
+    this.distSinceSpawn = 0;
+    this.nextGap = rand(260, 460);
+
+    this.score = 0;
+    this.passBonus = 0;
+    this.alive = true;
+    this.overTitle = undefined;
+    this.overBody = undefined;
+    this._lastTs = null;
+  },
+
+  // current on-screen hitbox / draw rect for the player
+  playerRect() {
+    const w = this.ducking ? DUCK_W : STAND_W;
+    const h = this.ducking ? DUCK_H : STAND_H;
+    return { x: PLAYER_X, y: GROUND_Y - this.groundOffset - h, w, h };
+  },
+
+  spawn() {
+    const wantBird = this.distance > 500 && Math.random() < 0.28;
+    if (wantBird) {
+      this.obstacles.push({ type: "bird", x: W + 10, y: BIRD_BOTTOM - BIRD_H, w: BIRD_W, h: BIRD_H, passed: false });
+    } else {
+      const k = CACTUS_KINDS[(Math.random() * CACTUS_KINDS.length) | 0];
+      this.obstacles.push({ type: "cactus", x: W + 10, y: GROUND_Y - k.h, w: k.w, h: k.h, arms: k.arms, passed: false });
+    }
+  },
+
+  step(ts) {
+    if (this._lastTs == null) { this._lastTs = ts; return; }
+    let dt = (ts - this._lastTs) / 1000;
+    this._lastTs = ts;
+    if (dt > 0.05) dt = 0.05; // clamp huge jumps (e.g. tab was backgrounded)
+
+    this.runTime += dt;
+    this.speed = Math.min(MAX_SPEED, BASE_SPEED + this.runTime * ACCEL);
+    this.distance += this.speed * dt;
+    this.score = Math.floor(this.distance / 8) + this.passBonus;
+
+    // player vertical physics
+    if (!this.grounded) {
+      this.vy -= GRAVITY * dt;
+      this.groundOffset += this.vy * dt;
+      if (this.groundOffset <= 0) {
+        this.groundOffset = 0;
+        this.vy = 0;
+        this.grounded = true;
+      }
+    }
+
+    // obstacles: scroll, spawn, cull
+    for (const o of this.obstacles) o.x -= this.speed * dt;
+    while (this.obstacles.length && this.obstacles[0].x + this.obstacles[0].w < 0) this.obstacles.shift();
+
+    this.distSinceSpawn += this.speed * dt;
+    if (this.distSinceSpawn >= this.nextGap) {
+      this.spawn();
+      this.distSinceSpawn = 0;
+      this.nextGap = rand(260, 460) * (this.speed / BASE_SPEED);
+    }
+
+    // collision + pass-scoring
+    const p = this.playerRect();
+    for (const o of this.obstacles) {
+      const hit = p.x < o.x + o.w && p.x + p.w > o.x && p.y < o.y + o.h && p.y + p.h > o.y;
+      if (hit) {
+        this.overTitle = "💥 Crashed";
+        this.overBody = "You ran to a score of " + this.score + ". Resume or Restart to run again.";
+        this.alive = false;
+        return;
+      }
+      if (!o.passed && o.x + o.w < p.x) {
+        o.passed = true;
+        this.passBonus += 5;
+        this.score = Math.floor(this.distance / 8) + this.passBonus;
+        Shell.beep(720, 0.04, "square");
+      }
+    }
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // faint scrolling background clouds (slow parallax)
+    ctx.fillStyle = COLOR.line;
+    for (let i = 0; i < 3; i++) {
+      const cx = ((W * 0.9 * i + W - (this.distance * 0.12) % (W * 1.2)) % (W + 160)) - 80;
+      const cy = 40 + i * 26;
+      ctx.globalAlpha = 0.5;
+      roundRect(cx, cy, 70, 16, 8);
+      ctx.globalAlpha = 1;
+    }
+
+    // ground line + scrolling dash texture
+    ctx.strokeStyle = COLOR.line;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, GROUND_Y + 1); ctx.lineTo(W, GROUND_Y + 1); ctx.stroke();
+    ctx.fillStyle = COLOR.line;
+    const phase = -(this.distance % 40);
+    for (let x = phase; x < W; x += 40) {
+      ctx.fillRect(x, GROUND_Y + 8, 18, 3);
+    }
+
+    // obstacles
+    for (const o of this.obstacles) {
+      ctx.fillStyle = COLOR.alert;
+      if (o.type === "bird") {
+        roundRect(o.x, o.y, o.w, o.h, 5);
+        // flapping wings, alternate based on distance
+        const up = Math.floor(this.distance / 12) % 2 === 0;
+        ctx.beginPath();
+        ctx.moveTo(o.x + o.w * 0.15, o.y + o.h * 0.5);
+        ctx.lineTo(o.x - 6, o.y + (up ? -6 : o.h + 6));
+        ctx.lineTo(o.x + o.w * 0.45, o.y + o.h * 0.5);
+        ctx.fill();
+      } else {
+        roundRect(o.x, o.y, o.w, o.h, 4);
+        if (o.arms >= 1) roundRect(o.x - 6, o.y + o.h * 0.35, 6, o.h * 0.3, 3);
+        if (o.arms >= 2) roundRect(o.x + o.w, o.y + o.h * 0.2, 6, o.h * 0.3, 3);
+      }
+    }
+
+    // player
+    const p = this.playerRect();
+    ctx.fillStyle = COLOR.accent;
+    roundRect(p.x, p.y, p.w, p.h, 6);
+    if (!this.ducking) {
+      // head bump at the front-top
+      roundRect(p.x + p.w - 12, p.y - 8, 18, 16, 5);
+      // eye
+      ctx.fillStyle = COLOR.bg;
+      ctx.fillRect(p.x + p.w - 3, p.y - 3, 3, 3);
+      // running legs, alternate while grounded
+      if (this.grounded) {
+        ctx.fillStyle = COLOR.accent;
+        const legPhase = Math.floor(this.distance / 20) % 2 === 0;
+        roundRect(p.x + (legPhase ? 2 : p.w - 10), p.y + p.h - 2, 8, 8, 3);
+      }
+    } else {
+      // ducking silhouette: a small head nub at the front, low profile
+      roundRect(p.x + p.w - 14, p.y - 2, 16, 10, 4);
+    }
+  },
+
+  input(e) {
+    const isJump = e.code === "Space" || e.key === " " || e.key === "Spacebar" || e.key === "ArrowUp";
+    if (isJump) {
+      e.preventDefault();
+      if (this.grounded) {
+        this.vy = JUMP_SPEED;
+        this.grounded = false;
+        this.ducking = false;
+      }
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      this.ducking = true;
+      if (!this.grounded && !e.repeat) this.vy = 0; // cancel the jump arc, start falling from here
+    }
+  },
+};
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+  ctx.fill();
+}
+
+// keyup isn't part of the shell's Game contract (it only forwards keydown, and
+// only while running) — release duck directly, same pattern as Breakout/Pong's
+// held-key tracking, so releasing the key while paused doesn't leave it "stuck".
+addEventListener("keyup", (e) => {
+  if (e.key === "ArrowDown") Game.ducking = false;
+});
+
+Shell.boot(Game);
+</script>
+</body>
+</html>

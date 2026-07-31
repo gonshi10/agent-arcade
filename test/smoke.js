@@ -40,6 +40,25 @@ function request(port, method, urlPath, body) {
   });
 }
 
+// Like request(), but for static routes: returns the raw string body instead of
+// JSON-parsing it (HTML/JS/CSS bodies aren't JSON and would throw in request()).
+function rawRequest(port, method, urlPath) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, method, path: urlPath },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode, headers: res.headers, body: data })
+        );
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 function withServer(fn) {
   return async () => {
     const server = createServer();
@@ -111,6 +130,19 @@ test("only ?watch=1 polls mark the game as watched", withServer(async (port) => 
   assert.equal(after.body.watched, false, "/event/closed should clear watched");
 }));
 
+test("closing one tab doesn't clear another open tab's watched status", withServer(async (port) => {
+  await request(port, "GET", "/state?watch=1&tab=picker");
+  await request(port, "GET", "/state?watch=1&tab=game");
+
+  await request(port, "POST", "/event/closed?tab=picker");
+  const after = await request(port, "GET", "/state");
+  assert.equal(after.body.watched, true, "the still-open 'game' tab should keep watched true");
+
+  await request(port, "POST", "/event/closed?tab=game");
+  const final = await request(port, "GET", "/state");
+  assert.equal(final.body.watched, false, "closing the last open tab should clear watched");
+}));
+
 test("createServer seeds the initial agent state (cold-start working)", async () => {
   // The prompt hook cold-starts the server with --state working so the open tab
   // shows the game even if the follow-up `working` POST never lands.
@@ -130,6 +162,61 @@ test("/state reports the build identity (for stale-server detection)", withServe
   const { body } = await request(port, "GET", "/state");
   assert.ok(typeof body.build === "string" && body.build.length > 0, "build should be present");
   assert.equal(body.build, BUILD, "/state build should match the exported BUILD");
+}));
+
+// --- 1a. static file serving --------------------------------------------------
+
+test("GET / serves the dashboard shell as html", withServer(async (port) => {
+  const { status, headers } = await rawRequest(port, "GET", "/");
+  assert.equal(status, 200);
+  assert.match(headers["content-type"], /html/);
+}));
+
+test("GET /index still resolves (legacy alias)", withServer(async (port) => {
+  const { status, headers } = await rawRequest(port, "GET", "/index");
+  assert.equal(status, 200);
+  assert.match(headers["content-type"], /html/);
+}));
+
+test("GET /shell.js serves javascript", withServer(async (port) => {
+  const { status, headers } = await rawRequest(port, "GET", "/shell.js");
+  assert.equal(status, 200);
+  assert.match(headers["content-type"], /javascript/);
+}));
+
+// Games are being added concurrently by other work in this phase; this proves the
+// static-file route resolves them automatically once present, but don't treat a
+// failure here as a bug in the server/static-serving code itself if the file
+// doesn't exist yet.
+test("GET /games/snake.html serves html", withServer(async (port) => {
+  const { status, headers } = await rawRequest(port, "GET", "/games/snake.html");
+  assert.equal(status, 200);
+  assert.match(headers["content-type"], /html/);
+}));
+
+test("GET /this-does-not-exist is a 404", withServer(async (port) => {
+  const { status } = await rawRequest(port, "GET", "/this-does-not-exist");
+  assert.equal(status, 404);
+}));
+
+test("path traversal outside public/ is blocked", withServer(async (port) => {
+  // lib/server.js has a .js extension (allow-listed), so if the traversal guard
+  // didn't work this would resolve and serve it with a 200 — proving the 404 here
+  // demonstrates the guard, not just "file not found anyway".
+  const { status } = await rawRequest(port, "GET", "/%2e%2e/lib/server.js");
+  assert.equal(status, 404);
+}));
+
+test("a URL-encoded null byte 404s instead of crashing the server", withServer(async (port) => {
+  // decodeURIComponent("%00foo.html") contains a literal NUL, which still passes
+  // the extname allow-list and the withinPublic prefix check, so without an
+  // explicit guard this reaches fs.readFile — which throws *synchronously* for
+  // paths containing "\0", outside any try/catch, killing the whole process.
+  const { status } = await rawRequest(port, "GET", "/%00foo.html");
+  assert.equal(status, 404);
+  // The server must still be alive/responsive afterward.
+  const after = await request(port, "GET", "/state");
+  assert.equal(after.status, 200);
 }));
 
 // --- 1b. buildHooks: auto-launch UserPromptSubmit ----------------------------

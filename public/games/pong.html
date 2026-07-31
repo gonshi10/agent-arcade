@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pong — Agent Arcade</title>
+<link rel="stylesheet" href="../shell.css">
+<style>
+  /* Pong is a wide-ish table, not the shared 520x520 square stage — override
+     just the sizing on the shared chrome classes so the HUD/stage/controls/
+     foot line up with the wider canvas. Everything else (colors, overlay,
+     pill, ctl, dot, kbd) stays exactly as shell.css defines it. */
+  .hud, .stage, .controls, .foot { width: 700px; max-width: 96vw; }
+  .stage { aspect-ratio: 700 / 420; }
+</style>
+</head>
+<body>
+  <div class="hud">
+    <div>
+      <div class="label">Agent</div>
+      <div class="big"><span id="dot" class="dot"></span><span id="status">connecting…</span></div>
+    </div>
+    <div style="text-align:center">
+      <div class="label">Autonomous streak</div>
+      <div class="big" id="streak">0.0s</div>
+    </div>
+    <div style="text-align:right">
+      <div class="label">Score · Tools</div>
+      <div class="big"><span id="score">0</span> · <span id="tools">0</span></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="game" width="700" height="420"></canvas>
+    <div id="overlay" class="overlay">
+      <span class="pill" id="ovpill">paused</span>
+      <h1 id="ovtitle">—</h1>
+      <p id="ovbody">—</p>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button id="btnResume" class="ctl" type="button">⏸ Pause</button>
+    <button id="btnRestart" class="ctl" type="button">↻ Restart</button>
+  </div>
+
+  <div class="foot">
+    <div><span class="dot working"></span>agent working · <span class="dot waiting"></span>agent needs you / finished — the game auto-pauses so you can jump back.</div>
+    <div>Defend the right wall with <kbd>↑</kbd><kbd>↓</kbd> or your mouse over the table. The ball bounces off the left wall and the top/bottom — every return scores a point and nudges the ball a little faster. The game auto-starts and plays while you wait on the agent; it pauses when the agent needs you or finishes. <b>Pause</b>/<b>Resume</b> anytime, or <b>Restart</b> for a fresh rally. Your streak grows while the agent runs without needing you. · <a href="/?pick=1" style="color:var(--dim)">⌂ Change game</a></div>
+  </div>
+
+<script src="../shell.js"></script>
+<script>
+"use strict";
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height;
+
+const BALL_R = 8;
+const PADDLE_W = 12, PADDLE_H = 90, PADDLE_MARGIN = 18;
+const PADDLE_X = W - PADDLE_MARGIN - PADDLE_W; // left edge of the paddle rect
+const PADDLE_SPEED = 8;      // px/frame @60fps, keyboard hold
+const BASE_SPEED = 4.2;      // px/frame @60fps, serve speed
+const SPEED_GAIN = 1.035;    // multiplier applied to ball speed on every return
+const MAX_SPEED = 11.5;      // px/frame @60fps cap
+const MAX_ANGLE = Math.PI / 3; // steepest return angle (60°), driven by hit offset
+
+const keys = { up: false, down: false };
+
+const Game = {
+  alive: true,
+  score: 0,
+  overTitle: "🏓 Rally over",
+  overBody: "The ball got past you. Resume or Restart to rally again.",
+
+  reset() {
+    this.paddle = { x: PADDLE_X, y: H / 2 - PADDLE_H / 2, w: PADDLE_W, h: PADDLE_H };
+    this.ball = serve();
+    this.score = 0;
+    this.alive = true;
+    this._lastTs = null;
+  },
+
+  step(ts) {
+    if (this._lastTs == null) { this._lastTs = ts; return; }
+    const dt = Math.min(ts - this._lastTs, 50) / (1000 / 60); // frames @60fps, clamped
+    this._lastTs = ts;
+
+    const p = this.paddle, b = this.ball;
+
+    // keyboard paddle movement
+    if (keys.up) p.y -= PADDLE_SPEED * dt;
+    if (keys.down) p.y += PADDLE_SPEED * dt;
+    p.y = clamp(p.y, 0, H - p.h);
+
+    // ball motion
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+
+    // top / bottom walls
+    if (b.y - b.r <= 0) { b.y = b.r; b.vy = Math.abs(b.vy); }
+    else if (b.y + b.r >= H) { b.y = H - b.r; b.vy = -Math.abs(b.vy); }
+
+    // left wall
+    if (b.x - b.r <= 0) { b.x = b.r; b.vx = Math.abs(b.vx); Shell.beep(300, 0.04, "square"); }
+
+    // right edge: the paddle defends it, or the rally ends
+    if (b.vx > 0 && b.x + b.r >= p.x) {
+      if (b.y + b.r >= p.y && b.y - b.r <= p.y + p.h) {
+        const speed = Math.min(MAX_SPEED, Math.hypot(b.vx, b.vy) * SPEED_GAIN);
+        const rel = clamp((b.y - (p.y + p.h / 2)) / (p.h / 2), -1, 1);
+        const angle = rel * MAX_ANGLE;
+        b.vx = -Math.cos(angle) * speed;
+        b.vy = Math.sin(angle) * speed;
+        b.x = p.x - b.r - 0.5; // step out of the paddle so we don't re-trigger next frame
+        this.score++;
+        Shell.beep(660, 0.05, "square");
+      } else {
+        this.overBody = "You returned the ball " + this.score + " time" + (this.score === 1 ? "" : "s") +
+          ". Resume or Restart to rally again.";
+        this.alive = false;
+      }
+    }
+  },
+
+  draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // center divider
+    ctx.setLineDash([6, 10]);
+    ctx.strokeStyle = "#1d242e";
+    ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // left wall marker
+    ctx.fillStyle = "#1d242e";
+    ctx.fillRect(0, 0, 4, H);
+
+    // paddle
+    ctx.fillStyle = "#37e0a0";
+    ctx.beginPath();
+    ctx.roundRect(this.paddle.x, this.paddle.y, this.paddle.w, this.paddle.h, 4);
+    ctx.fill();
+
+    // ball
+    ctx.fillStyle = "#ffb454";
+    ctx.beginPath();
+    ctx.arc(this.ball.x, this.ball.y, this.ball.r, 0, Math.PI * 2);
+    ctx.fill();
+  },
+
+  input(e) {
+    if (e.key === "ArrowUp") { keys.up = true; e.preventDefault(); }
+    else if (e.key === "ArrowDown") { keys.down = true; e.preventDefault(); }
+  },
+};
+
+function serve() {
+  const dir = Math.random() < 0.5 ? -1 : 1;
+  return {
+    x: W / 2, y: H / 2, r: BALL_R,
+    vx: dir * BASE_SPEED,
+    vy: (Math.random() * 2 - 1) * BASE_SPEED * 0.6,
+  };
+}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// keyup isn't part of the shell's Game contract (it only forwards keydown, and
+// only while running) — clear our hold-flags directly so a key released while
+// paused doesn't stay "stuck" once resumed.
+addEventListener("keyup", (e) => {
+  if (e.key === "ArrowUp") keys.up = false;
+  else if (e.key === "ArrowDown") keys.down = false;
+});
+
+// mouse-Y paddle control, same pattern as Breakout: an extra listener directly
+// on the canvas, gated on the shell's running-state getter itself.
+cv.addEventListener("mousemove", (e) => {
+  if (!Shell.isRunning()) return;
+  const rect = cv.getBoundingClientRect();
+  const scaleY = cv.height / rect.height;
+  const my = (e.clientY - rect.top) * scaleY;
+  Game.paddle.y = clamp(my - Game.paddle.h / 2, 0, H - Game.paddle.h);
+});
+
+Shell.boot(Game);
+</script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+/*
+ * shell.css — shared "arcade shell" chrome, extracted verbatim from the original
+ * single-file Snake prototype (public/index.html). Every game page includes this
+ * for the HUD / stage / overlay / controls / footer look, then layers on nothing
+ * else canvas-specific — sizing here (e.g. the 520px stage) is the shared arcade
+ * frame size, not a Snake-only detail.
+ *
+ * Pairs with public/shell.js. See that file for the JS API this chrome is wired
+ * up by (HUD ids, overlay ids, control ids, .dot/.overlay state classes, etc.).
+ */
+:root{
+  --bg:#0a0c10; --panel:#11151c; --line:#1d242e;
+  --ink:#e6edf3; --dim:#7d8896; --accent:#37e0a0; --warn:#ffb454; --alert:#ff5c5c;
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--mono);
+  display:flex; align-items:center; justify-content:center; gap:24px;
+  flex-direction:column; min-height:100vh; padding:24px;
+}
+.hud{
+  width:520px; max-width:92vw; display:flex; justify-content:space-between;
+  align-items:flex-end; font-size:12px; letter-spacing:.06em;
+}
+.hud .label{color:var(--dim); text-transform:uppercase}
+.hud .big{font-size:22px}
+#status{font-weight:600}
+.stage{position:relative; width:520px; max-width:92vw; aspect-ratio:1/1}
+canvas{
+  width:100%; height:100%; background:var(--panel);
+  border:1px solid var(--line); border-radius:14px; display:block;
+}
+.overlay{
+  position:absolute; inset:0; display:none; flex-direction:column;
+  align-items:center; justify-content:center; text-align:center; gap:14px;
+  border-radius:14px; backdrop-filter:blur(2px); padding:24px;
+}
+.overlay.show{display:flex}
+.overlay h1{margin:0; font-size:30px; letter-spacing:.04em}
+.overlay p{margin:0; color:var(--dim); max-width:80%}
+.overlay.alert{background:rgba(255,92,92,.10); border:1px solid var(--alert)}
+.overlay.done{background:rgba(55,224,160,.08); border:1px solid var(--accent)}
+.overlay.idle{background:rgba(13,17,23,.65); border:1px solid var(--line)}
+/* Pages with no .stage(position:relative) wrapper (e.g. the dashboard picker)
+   need the overlay pinned to the viewport instead of an unpredictable
+   containing block, and square corners since there's no canvas beneath it. */
+.overlay.standalone{ position:fixed; border-radius:0; z-index:10; }
+/* A .ctl button embedded directly inside .overlay (rather than in a sibling
+   .controls row) shouldn't stretch/shrink along the overlay's flex axis. */
+.overlay .ctl{ flex:none; min-width:160px; }
+.pill{
+  font-size:11px; text-transform:uppercase; letter-spacing:.1em;
+  padding:4px 10px; border-radius:999px; border:1px solid var(--line); color:var(--dim);
+}
+.controls{
+  width:520px; max-width:92vw; display:flex; gap:10px; justify-content:center;
+}
+.ctl{
+  flex:1; font-family:var(--mono); font-size:12px; letter-spacing:.04em;
+  padding:9px 12px; border-radius:10px; cursor:pointer;
+  background:var(--panel); border:1px solid var(--line); color:var(--dim);
+  transition:border-color .12s, color .12s, background .12s;
+}
+.ctl:hover{color:var(--ink)}
+.ctl.active{border-color:var(--accent); color:var(--accent); background:rgba(55,224,160,.08)}
+.foot{width:520px; max-width:92vw; color:var(--dim); font-size:11px; line-height:1.6}
+kbd{background:#000; border:1px solid var(--line); border-radius:4px; padding:1px 5px; color:var(--ink)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-right:6px;vertical-align:middle}
+.dot.working{background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.dot.waiting{background:var(--alert);box-shadow:0 0 10px var(--alert)}
+.dot.done{background:var(--accent)}

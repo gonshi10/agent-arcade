@@ -20,15 +20,31 @@ done     → freeze, soft chime, shows streak + tool count
 | path | role |
 |---|---|
 | `bin/agent-arcade.js` | CLI entry — arg/flag parsing, the `start`/`install`/`verify`/`uninstall`/`help` subcommands, browser open, server ping. |
-| `lib/server.js` | `createServer()` — the HTTP server + in-memory state machine. Serves `public/index.html`, `GET /state`, `POST /event/*`. |
+| `lib/server.js` | `createServer()` — the HTTP server + in-memory state machine. Serves everything under `public/` via a small static handler, plus `GET /state` and `POST /event/*`. |
 | `lib/hooks.js` | The load-bearing installer: deep-merges our hooks into Claude Code `settings.json` without clobbering existing ones. `install` / `uninstall` / `inspect` / `buildHooks`. |
 | `lib/gitignore.js` | Finds the git root and idempotently patches `.gitignore` on `install` (scope-dependent patterns). |
-| `public/index.html` | The game UI. Polls `/state` and reads only the `agent` field, so the game can be swapped freely. |
+| `public/index.html` | The dashboard/picker. On load, redirects straight into the last-picked game via `localStorage["agent-arcade:lastGame"]` — unless the URL contains `pick`, which is the escape hatch back to the picker. |
+| `public/shell.css` | Shared style tokens (dark terminal aesthetic) linked by every game page. |
+| `public/shell.js` | Shared driver: HUD, pause/resume/restart overlay, WebAudio chimes, tab-title flashing, and the `/state` poll loop. Reads only the `agent` field and drives whatever `Game` object the page defines. |
+| `public/games/*.html` | The 5 games — `snake.html`, `dino.html`, `breakout.html`, `pong.html`, `2048.html`. Each is a self-contained page implementing a small `Game` object contract that `shell.js` drives. |
 | `test/smoke.js` | Zero-dep `node:test` smoke tests for the server + installer. |
 
 Relative paths matter: `bin/agent-arcade.js` requires `../lib/*`, and `lib/server.js`
-reads `../public/index.html`. Keep the `bin/lib/public` layout — `package.json` `bin` and
-`files` depend on it.
+serves files from `../public/` (extension allow-list of `.html`/`.js`/`.css`, plus a
+path-traversal guard) rather than one hardcoded file. Keep the `bin/lib/public` layout —
+`package.json` `bin` and `files` depend on it.
+
+## Adding a 6th game
+
+- Drop `public/games/<name>.html` implementing the `Game` contract: `reset` and `draw` are
+  required; `step`, `input`, `overTitle`, `overBody`, `won` are optional; `alive` and
+  `score` are required.
+- Link `../shell.css` and `../shell.js` — don't reimplement the HUD/overlay/audio/poll loop.
+- Add one card to the dashboard grid in `public/index.html` with a matching `id`.
+- Add that same `id` to the `KNOWN` array near the top of `public/index.html` — it gates
+  the "remembers your pick" auto-redirect; a card that works but is missing from `KNOWN`
+  will never auto-launch on a returning visit and silently falls through to the picker
+  every time.
 
 ## Commands
 
